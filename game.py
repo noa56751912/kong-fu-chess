@@ -107,7 +107,14 @@ def _is_legal_move(grid, r1, c1, r2, c2):
     dr, dc = r2 - r1, c2 - c1
     is_capture = grid[r2][c2] != EMPTY
     check = rule.capture_ok if (is_capture and rule.capture_ok is not None) else rule.shape_ok
-    if not check(dr, dc, color):
+    ctx = {
+        'from_r': r1,
+        'from_c': c1,
+        'board_rows': len(grid),
+        'grid': grid,
+        'start_row_offset': rule.start_row_offset,
+    }
+    if not check(dr, dc, color, **ctx):
         return False
     if rule.sliding and not _is_path_clear(grid, r1, c1, r2, c2):
         return False
