@@ -25,15 +25,37 @@ class MoveRule(NamedTuple):
     shape_ok: Callable[[int, int, str], bool]
     sliding: bool
     capture_ok: Callable[[int, int, str], bool] = None  # None = same as shape_ok
+    start_row_offset: int = None  # rows from the piece's starting edge (e.g. 1 = second row); None = not applicable
+    on_arrive: Callable = None    # (piece, to_r, board_rows) -> final token to place; None = no transformation
 
 
-def _king_shape(dr, dc, color):   return max(abs(dr), abs(dc)) == 1
-def _knight_shape(dr, dc, color): return sorted([abs(dr), abs(dc)]) == [1, 2]
-def _rook_shape(dr, dc, color):   return dr == 0 or dc == 0
-def _bishop_shape(dr, dc, color): return abs(dr) == abs(dc) and dr != 0
-def _queen_shape(dr, dc, color):  return _rook_shape(dr, dc, color) or _bishop_shape(dr, dc, color)
-def _pawn_shape(dr, dc, color):   return dc == 0 and dr == (-1 if color == WHITE else 1)
-def _pawn_capture(dr, dc, color): return abs(dc) == 1 and dr == (-1 if color == WHITE else 1)
+def _king_shape(dr, dc, color, **ctx):   return max(abs(dr), abs(dc)) == 1
+def _knight_shape(dr, dc, color, **ctx): return sorted([abs(dr), abs(dc)]) == [1, 2]
+def _rook_shape(dr, dc, color, **ctx):   return dr == 0 or dc == 0
+def _bishop_shape(dr, dc, color, **ctx): return abs(dr) == abs(dc) and dr != 0
+def _queen_shape(dr, dc, color, **ctx):  return _rook_shape(dr, dc, color) or _bishop_shape(dr, dc, color)
+def _pawn_capture(dr, dc, color, **ctx): return abs(dc) == 1 and dr == (-1 if color == WHITE else 1)
+
+
+def _pawn_shape(dr, dc, color, **ctx):
+    if dc != 0:
+        return False
+    direction = -1 if color == WHITE else 1
+    if dr == direction:
+        return True
+    if dr != 2 * direction:
+        return False
+    start_row_offset = ctx.get('start_row_offset')
+    if start_row_offset is None:
+        return False
+    board_rows = ctx.get('board_rows')
+    from_r = ctx.get('from_r')
+    from_c = ctx.get('from_c')
+    grid = ctx.get('grid')
+    start_row = (board_rows - 1 - start_row_offset) if color == WHITE else start_row_offset
+    if from_r != start_row:
+        return False
+    return _is_path_clear(grid, from_r, from_c, from_r + dr, from_c)
 
 
 MOVE_RULES = {
