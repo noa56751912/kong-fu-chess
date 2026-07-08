@@ -20,7 +20,7 @@ def run(input_text):
             game.click(cmd[1], cmd[2])
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':# pragma: no cover
     try:
         run(sys.stdin.read())
     except ValueError as e:

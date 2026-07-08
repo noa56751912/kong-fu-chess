@@ -284,6 +284,13 @@ class TestIllegalMoves:
         click(game, 0, 2)           # still no selection
         assert len(game.pending) == 0
 
+    def test_piece_with_no_rule_cannot_move(self):
+        # 'wX' has no entry in MOVE_RULES — rule is None branch in _is_legal_move
+        game = make_game(["wX . .", ". . .", ". . ."])
+        click(game, 0, 0)           # select wX
+        click(game, 0, 1)           # try to move — no rule exists
+        assert len(game.pending) == 0
+
 
 # ---------------------------------------------------------------------------
 # Wait advances clock
