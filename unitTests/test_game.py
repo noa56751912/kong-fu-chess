@@ -1,5 +1,5 @@
 import pytest
-from game import ChessGame, CELL_SIZE, MS_PER_SQUARE, EMPTY
+from game import ChessGame, CELL_SIZE, MS_PER_SQUARE, EMPTY, WHITE, _pawn_shape
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +290,150 @@ class TestIllegalMoves:
         click(game, 0, 0)           # select wX
         click(game, 0, 1)           # try to move — no rule exists
         assert len(game.pending) == 0
+
+
+# ---------------------------------------------------------------------------
+# Pawn two-square move
+# ---------------------------------------------------------------------------
+
+class TestPawnTwoSquareMove:
+
+    def test_white_pawn_two_square_move_from_start_row(self):
+        game = make_game([". . .", ". . .", "wP . .", ". . ."])
+        click(game, 2, 0)
+        click(game, 0, 0)
+        assert len(game.pending) == 1
+        assert game.pending[0].arrive_time == 2 * MS_PER_SQUARE
+
+    def test_black_pawn_two_square_move_from_start_row(self):
+        game = make_game([". . .", "bP . .", ". . .", ". . ."])
+        click(game, 1, 0)
+        click(game, 3, 0)
+        assert len(game.pending) == 1
+        assert game.pending[0].arrive_time == 2 * MS_PER_SQUARE
+
+    def test_two_square_move_lands_correctly_after_wait(self):
+        game = make_game([". . .", ". . .", "wP . .", ". . ."])
+        click(game, 2, 0)
+        click(game, 0, 0)
+        game.wait(2 * MS_PER_SQUARE)
+        assert game.grid[2][0] == EMPTY
+        assert game.grid[0][0] == 'wQ'   # also lands on the last row -> promotes
+
+
+class TestPawnTwoSquareIllegal:
+
+    def test_three_square_move_illegal(self):
+        game = make_game([". . .", ". . .", ". . .", ". . .", "wP . .", ". . ."])
+        click(game, 4, 0)
+        click(game, 1, 0)           # 3 squares — shape rejects before start-row is even checked
+        assert len(game.pending) == 0
+
+    def test_two_square_move_not_straight_illegal(self):
+        game = make_game([". . .", ". . .", "wP . .", ". . ."])
+        click(game, 2, 0)
+        click(game, 0, 1)           # dr=-2, dc=1 — not a straight file
+        assert len(game.pending) == 0
+
+    def test_two_square_move_wrong_direction_illegal(self):
+        game = make_game(["wP . .", ". . .", ". . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 2, 0)           # white pawn moving 2 squares "backward"
+        assert len(game.pending) == 0
+
+    def test_two_square_move_illegal_when_not_on_start_row(self):
+        game = make_game([". . .", ". . .", "wP . .", ". . .", ". . ."])
+        click(game, 2, 0)
+        click(game, 0, 0)           # true start row (board_rows - 1 - 1) is 3; pawn sits at 2
+        assert len(game.pending) == 0
+
+    def test_two_square_move_illegal_after_pawn_already_moved(self):
+        game = make_game([". . .", ". . .", ". . .", ". . .", "wP . .", ". . ."])
+        click(game, 4, 0)
+        click(game, 3, 0)           # first move: one square, off the start row
+        game.wait(MS_PER_SQUARE)    # settle it
+        click(game, 3, 0)
+        click(game, 1, 0)           # second move: try two squares from the new row
+        assert len(game.pending) == 0
+
+    def test_two_square_move_blocked_by_piece_in_path(self):
+        game = make_game([". . .", "bR . .", "wP . .", ". . ."])
+        click(game, 2, 0)
+        click(game, 0, 0)           # bR at (1,0) blocks the intervening square
+        assert len(game.pending) == 0
+
+    def test_two_square_move_onto_occupied_destination_illegal(self):
+        game = make_game(["bR . .", ". . .", "wP . .", ". . ."])
+        click(game, 2, 0)
+        click(game, 0, 0)           # destination occupied; not a valid pawn-capture shape
+        assert len(game.pending) == 0
+
+    def test_black_two_square_move_blocked_by_piece_in_path(self):
+        game = make_game([". . .", "bP . .", "wN . .", ". . ."])
+        click(game, 1, 0)
+        click(game, 3, 0)           # wN at (2,0) blocks the intervening square
+        assert len(game.pending) == 0
+
+    def test_pawn_shape_rejects_two_square_move_without_start_row_offset(self):
+        # Direct unit test of the defensive branch: a two-square shape with
+        # no start_row_offset in ctx (e.g. a piece reusing _pawn_shape but
+        # not configured with one) must be rejected, not raise.
+        assert _pawn_shape(-2, 0, WHITE) is False
+
+
+# ---------------------------------------------------------------------------
+# Pawn promotion
+# ---------------------------------------------------------------------------
+
+class TestPawnPromotion:
+
+    def test_white_pawn_promotes_on_single_square_move(self):
+        game = make_game([". . .", "wP . .", ". . ."])
+        click(game, 1, 0)
+        click(game, 0, 0)
+        game.wait(MS_PER_SQUARE)
+        assert game.grid[0][0] == 'wQ'
+        assert game.grid[1][0] == EMPTY
+
+    def test_black_pawn_promotes_on_single_square_move(self):
+        game = make_game([". . .", "bP . .", ". . ."])
+        click(game, 1, 0)
+        click(game, 2, 0)
+        game.wait(MS_PER_SQUARE)
+        assert game.grid[2][0] == 'bQ'
+
+    def test_white_pawn_promotes_via_two_square_move(self):
+        game = make_game([". . .", ". . .", "wP . .", ". . ."])
+        click(game, 2, 0)
+        click(game, 0, 0)
+        game.wait(2 * MS_PER_SQUARE)
+        assert game.grid[0][0] == 'wQ'
+
+    def test_pawn_not_reaching_last_row_does_not_promote(self):
+        game = make_game([". . .", ". . .", ". . .", "wP . .", ". . ."])
+        click(game, 3, 0)
+        click(game, 2, 0)           # one square, row 2 is not the last row
+        game.wait(MS_PER_SQUARE)
+        assert game.grid[2][0] == 'wP'
+
+    def test_promotion_combined_with_king_capture(self):
+        # Diagonal capture landing on the last row: the captured token is
+        # snapshotted before promotion, but by the time game_over is set the
+        # board must already show the promoted queen, not the pawn.
+        game = make_game(["bK . .", ". wP ."])
+        click(game, 1, 1)
+        click(game, 0, 0)
+        game.wait(MS_PER_SQUARE)
+        assert game.game_over is True
+        assert game.grid[0][0] == 'wQ'
+        assert game.grid[1][1] == EMPTY
+
+    def test_non_pawn_piece_unaffected_by_on_arrive(self):
+        game = make_game([". . .", "wQ . .", ". . ."])
+        click(game, 1, 0)
+        click(game, 0, 0)
+        game.wait(MS_PER_SQUARE)
+        assert game.grid[0][0] == 'wQ'
 
 
 # ---------------------------------------------------------------------------
