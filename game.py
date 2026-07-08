@@ -71,7 +71,8 @@ MOVE_RULES = {
     'R': MoveRule(shape_ok=_rook_shape,   sliding=True),
     'B': MoveRule(shape_ok=_bishop_shape, sliding=True),
     'Q': MoveRule(shape_ok=_queen_shape,  sliding=True),
-    'P': MoveRule(shape_ok=_pawn_shape,   sliding=False, capture_ok=_pawn_capture),
+    'P': MoveRule(shape_ok=_pawn_shape,   sliding=False, capture_ok=_pawn_capture,
+                  start_row_offset=1, on_arrive=_pawn_promote),
 }
 
 
