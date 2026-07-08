@@ -405,3 +405,36 @@ class TestGameOver:
         click(game, 0, 1)
         game.wait(1000)
         assert game.game_over is False
+
+    def test_try_schedule_move_noop_when_game_over(self):
+        # Direct call bypasses click()'s own game_over guard, exercising
+        # the guard inside _try_schedule_move itself.
+        game = make_game(["wR bK wQ", ". . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 0, 1)
+        game.wait(1000)             # rook captures bK -> game over
+        assert game.game_over is True
+        game._try_schedule_move(0, 2, 1, 2)
+        assert len(game.pending) == 0
+
+
+# ---------------------------------------------------------------------------
+# print_board
+# ---------------------------------------------------------------------------
+
+class TestPrintBoard:
+
+    def test_print_board_outputs_grid(self, capsys):
+        game = make_game(["wK . .", ". bK .", ". . ."])
+        game.print_board()
+        out = capsys.readouterr().out
+        assert out == "wK . .\n. bK .\n. . .\n"
+
+    def test_print_board_settles_pending_moves_first(self, capsys):
+        game = make_game(["wK . .", ". . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 0, 1)           # 1 square -> 1000 ms
+        game.wait(1000)
+        game.print_board()
+        out = capsys.readouterr().out
+        assert out == ". wK .\n. . .\n. . .\n"
