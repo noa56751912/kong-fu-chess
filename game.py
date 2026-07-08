@@ -111,12 +111,12 @@ class ChessGame:
         self.pending = [m for m in self.pending if m.arrive_time > self.clock_ms]
         for m in arrived:
             captured = self.grid[m.to_r][m.to_c]
+            self.grid[m.from_r][m.from_c] = EMPTY
+            self.grid[m.to_r][m.to_c] = m.piece
             if any(cond(captured) for cond in self.win_conditions):
                 self.game_over = True
                 self.pending.clear()
                 return
-            self.grid[m.from_r][m.from_c] = EMPTY
-            self.grid[m.to_r][m.to_c] = m.piece
 
     def _pixel_to_cell(self, x, y):
         col = x // CELL_SIZE
