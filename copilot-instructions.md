@@ -9,5 +9,6 @@ Pieces move in real-time with cooldowns, and the game ends when the King is phys
 4. **No Magic Numbers:** Infer dimensions dynamically where applicable and avoid hardcoded values that break flexibility.
 5. **Separation of Concerns:** Keep I/O operations (parsing, printing) completely separate from business logic (validation, game rules). 
 6. **Clean Output:** Do not include debugging text, prompts, or explanatory print statements in standard output functions unless explicitly requested.
+7. **Clean Code :** Adhere to the rules of Clean Code.
 
 When writing or modifying code, prioritize structural clarity and O(1) or O(n) time complexity where achievable.
