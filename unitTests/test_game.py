@@ -6,9 +6,9 @@ from game import ChessGame, CELL_SIZE, MS_PER_SQUARE, EMPTY
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_game(rows):
+def make_game(rows, win_conditions=None):
     """Build a ChessGame from a list of space-separated row strings."""
-    return ChessGame([r.split() for r in rows])
+    return ChessGame([r.split() for r in rows], win_conditions=win_conditions)
 
 
 def cell_center(row, col):
@@ -318,3 +318,90 @@ class TestWait:
         click(game, 0, 1)           # triggers _settle_moves
         assert game.grid[0][1] == 'wK'
         assert game.grid[0][0] == EMPTY
+
+
+# ---------------------------------------------------------------------------
+# Game over — capturing the king
+# ---------------------------------------------------------------------------
+
+class TestGameOver:
+
+    def test_game_not_over_initially(self):
+        game = make_game(["wK bK .", ". . .", ". . ."])
+        assert game.game_over is False
+
+    def test_capturing_king_sets_game_over(self):
+        # wR at (0,0), bK at (0,1) — rook captures king in 1000 ms
+        game = make_game(["wR bK .", ". . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 0, 1)
+        game.wait(1000)             # rook arrives and captures bK
+        assert game.game_over is True
+
+    def test_non_king_capture_does_not_end_game(self):
+        game = make_game(["wR bQ .", ". . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 0, 1)
+        game.wait(1000)
+        assert game.game_over is False
+
+    def test_click_after_game_over_is_ignored(self):
+        game = make_game(["wR bK .", ". . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 0, 1)
+        game.wait(1000)             # game over
+        click(game, 0, 2)           # should be completely ignored
+        assert game.selection is None
+        assert len(game.pending) == 0
+
+    def test_no_new_moves_scheduled_after_game_over(self):
+        game = make_game(["wR bK wK", ". . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 0, 1)
+        game.wait(1000)             # rook captures bK → game over
+        click(game, 0, 2)           # try to move wK
+        click(game, 0, 1)
+        assert len(game.pending) == 0
+
+    def test_pending_moves_cancelled_on_king_capture(self):
+        # Two pieces moving: rook toward king, and another piece already pending
+        # King is captured first → the other pending move must be cancelled
+        game = make_game(["wR bK wQ . .", ". . . . .", ". . . . ."])
+        # Schedule wR → col1 (captures bK in 1000ms)
+        click(game, 0, 0)
+        click(game, 0, 1)
+        # Now manually add a second pending move (wQ → col4, arrives at 3000ms)
+        # by temporarily bypassing the single-move guard via direct pending append
+        from game import PendingMove, MS_PER_SQUARE
+        game.pending.append(PendingMove('wQ', 0, 2, 0, 4, 3000))
+        assert len(game.pending) == 2
+        game.wait(1000)             # rook arrives, captures king
+        assert game.game_over is True
+        assert len(game.pending) == 0   # wQ's pending move cancelled
+
+    def test_board_state_frozen_after_game_over(self):
+        game = make_game(["wR bK .", ". . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 0, 1)
+        game.wait(1000)
+        board_snapshot = [row[:] for row in game.grid]
+        game.wait(5000)             # more time passes — nothing should change
+        assert game.grid == board_snapshot
+
+    def test_custom_win_condition_queen_capture(self):
+        # Custom rule: capturing a queen ends the game
+        game = make_game(["wR bQ .", ". . .", ". . ."],
+                         win_conditions=[lambda t: t == 'bQ'])
+        click(game, 0, 0)
+        click(game, 0, 1)
+        game.wait(1000)
+        assert game.game_over is True
+
+    def test_empty_win_conditions_never_ends_game(self):
+        # No win conditions → game never ends even if king captured
+        game = make_game(["wR bK .", ". . .", ". . ."],
+                         win_conditions=[])
+        click(game, 0, 0)
+        click(game, 0, 1)
+        game.wait(1000)
+        assert game.game_over is False
