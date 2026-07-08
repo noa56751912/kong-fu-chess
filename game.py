@@ -58,6 +58,13 @@ def _pawn_shape(dr, dc, color, **ctx):
     return _is_path_clear(grid, from_r, from_c, from_r + dr, from_c)
 
 
+def _pawn_promote(piece, to_r, board_rows):
+    """Return the queen token if the pawn reached the last row, otherwise piece unchanged."""
+    color = _color(piece)
+    last_row = 0 if color == WHITE else board_rows - 1
+    return color + 'Q' if to_r == last_row else piece
+
+
 MOVE_RULES = {
     'K': MoveRule(shape_ok=_king_shape,   sliding=False),
     'N': MoveRule(shape_ok=_knight_shape, sliding=False),
