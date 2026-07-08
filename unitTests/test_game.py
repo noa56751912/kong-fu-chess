@@ -299,21 +299,23 @@ class TestIllegalMoves:
 class TestPawnTwoSquareMove:
 
     def test_white_pawn_two_square_move_from_start_row(self):
-        game = make_game([". . .", ". . .", "wP . .", ". . ."])
+        # White's start row is the board's last row (the edge itself).
+        game = make_game([". . .", ". . .", "wP . ."])
         click(game, 2, 0)
         click(game, 0, 0)
         assert len(game.pending) == 1
         assert game.pending[0].arrive_time == 2 * MS_PER_SQUARE
 
     def test_black_pawn_two_square_move_from_start_row(self):
-        game = make_game([". . .", "bP . .", ". . .", ". . ."])
-        click(game, 1, 0)
-        click(game, 3, 0)
+        # Black's start row is the board's first row (the edge itself).
+        game = make_game(["bP . .", ". . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 2, 0)
         assert len(game.pending) == 1
         assert game.pending[0].arrive_time == 2 * MS_PER_SQUARE
 
     def test_two_square_move_lands_correctly_after_wait(self):
-        game = make_game([". . .", ". . .", "wP . .", ". . ."])
+        game = make_game([". . .", ". . .", "wP . ."])
         click(game, 2, 0)
         click(game, 0, 0)
         game.wait(2 * MS_PER_SQUARE)
@@ -324,31 +326,32 @@ class TestPawnTwoSquareMove:
 class TestPawnTwoSquareIllegal:
 
     def test_three_square_move_illegal(self):
-        game = make_game([". . .", ". . .", ". . .", ". . .", "wP . .", ". . ."])
+        game = make_game([". . .", ". . .", ". . .", ". . .", "wP . ."])
         click(game, 4, 0)
         click(game, 1, 0)           # 3 squares — shape rejects before start-row is even checked
         assert len(game.pending) == 0
 
     def test_two_square_move_not_straight_illegal(self):
-        game = make_game([". . .", ". . .", "wP . .", ". . ."])
+        game = make_game([". . .", ". . .", "wP . ."])
         click(game, 2, 0)
         click(game, 0, 1)           # dr=-2, dc=1 — not a straight file
         assert len(game.pending) == 0
 
     def test_two_square_move_wrong_direction_illegal(self):
-        game = make_game(["wP . .", ". . .", ". . .", ". . ."])
+        game = make_game(["wP . .", ". . .", ". . ."])
         click(game, 0, 0)
         click(game, 2, 0)           # white pawn moving 2 squares "backward"
         assert len(game.pending) == 0
 
     def test_two_square_move_illegal_when_not_on_start_row(self):
-        game = make_game([". . .", ". . .", "wP . .", ". . .", ". . ."])
+        # True start row is the last row (3); pawn sits one square in from it.
+        game = make_game([". . .", ". . .", "wP . .", ". . ."])
         click(game, 2, 0)
-        click(game, 0, 0)           # true start row (board_rows - 1 - 1) is 3; pawn sits at 2
+        click(game, 0, 0)
         assert len(game.pending) == 0
 
     def test_two_square_move_illegal_after_pawn_already_moved(self):
-        game = make_game([". . .", ". . .", ". . .", ". . .", "wP . .", ". . ."])
+        game = make_game([". . .", ". . .", ". . .", ". . .", "wP . ."])
         click(game, 4, 0)
         click(game, 3, 0)           # first move: one square, off the start row
         game.wait(MS_PER_SQUARE)    # settle it
@@ -357,21 +360,21 @@ class TestPawnTwoSquareIllegal:
         assert len(game.pending) == 0
 
     def test_two_square_move_blocked_by_piece_in_path(self):
-        game = make_game([". . .", "bR . .", "wP . .", ". . ."])
+        game = make_game([". . .", "bR . .", "wP . ."])
         click(game, 2, 0)
         click(game, 0, 0)           # bR at (1,0) blocks the intervening square
         assert len(game.pending) == 0
 
     def test_two_square_move_onto_occupied_destination_illegal(self):
-        game = make_game(["bR . .", ". . .", "wP . .", ". . ."])
+        game = make_game(["bR . .", ". . .", "wP . ."])
         click(game, 2, 0)
         click(game, 0, 0)           # destination occupied; not a valid pawn-capture shape
         assert len(game.pending) == 0
 
     def test_black_two_square_move_blocked_by_piece_in_path(self):
-        game = make_game([". . .", "bP . .", "wN . .", ". . ."])
-        click(game, 1, 0)
-        click(game, 3, 0)           # wN at (2,0) blocks the intervening square
+        game = make_game(["bP . .", "wN . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 2, 0)           # wN at (1,0) blocks the intervening square
         assert len(game.pending) == 0
 
     def test_pawn_shape_rejects_two_square_move_without_start_row_offset(self):
@@ -403,7 +406,7 @@ class TestPawnPromotion:
         assert game.grid[2][0] == 'bQ'
 
     def test_white_pawn_promotes_via_two_square_move(self):
-        game = make_game([". . .", ". . .", "wP . .", ". . ."])
+        game = make_game([". . .", ". . .", "wP . ."])
         click(game, 2, 0)
         click(game, 0, 0)
         game.wait(2 * MS_PER_SQUARE)
