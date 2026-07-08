@@ -5,6 +5,11 @@ MS_PER_SQUARE = 1000
 EMPTY = '.'
 WHITE = 'w'
 BLACK = 'b'
+KING  = 'K'
+
+WIN_CONDITIONS = [
+    lambda captured: _piece_type(captured) == KING,
+]
 
 
 class PendingMove(NamedTuple):
@@ -89,18 +94,27 @@ def _color(token):
 
 
 class ChessGame:
-    def __init__(self, grid):
+    def __init__(self, grid, win_conditions=None):
         self.grid = [row[:] for row in grid]
         self.rows = len(grid)
         self.cols = len(grid[0]) if self.rows > 0 else 0
         self.selection = None  # (row, col) of selected piece
         self.clock_ms = 0
         self.pending: list = []
+        self.game_over = False
+        self.win_conditions = win_conditions if win_conditions is not None else WIN_CONDITIONS
 
     def _settle_moves(self):
+        if self.game_over:
+            return
         arrived = [m for m in self.pending if m.arrive_time <= self.clock_ms]
         self.pending = [m for m in self.pending if m.arrive_time > self.clock_ms]
         for m in arrived:
+            captured = self.grid[m.to_r][m.to_c]
+            if any(cond(captured) for cond in self.win_conditions):
+                self.game_over = True
+                self.pending.clear()
+                return
             self.grid[m.from_r][m.from_c] = EMPTY
             self.grid[m.to_r][m.to_c] = m.piece
 
@@ -115,6 +129,8 @@ class ChessGame:
         return any(m.from_r == row and m.from_c == col for m in self.pending)
 
     def _try_schedule_move(self, from_r, from_c, to_r, to_c):
+        if self.game_over:
+            return
         if _is_legal_move(self.grid, from_r, from_c, to_r, to_c):
             piece = self.grid[from_r][from_c]
             distance = max(abs(to_r - from_r), abs(to_c - from_c))
@@ -136,6 +152,8 @@ class ChessGame:
 
     def click(self, x, y):
         self._settle_moves()
+        if self.game_over:
+            return
         cell = self._pixel_to_cell(x, y)
         if cell is None:
             return
