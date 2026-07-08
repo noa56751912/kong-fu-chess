@@ -148,8 +148,10 @@ class ChessGame:
         self.pending = [m for m in self.pending if m.arrive_time > self.clock_ms]
         for m in arrived:
             captured = self.grid[m.to_r][m.to_c]
+            rule = MOVE_RULES.get(_piece_type(m.piece))
+            final_piece = rule.on_arrive(m.piece, m.to_r, self.rows) if rule and rule.on_arrive else m.piece
             self.grid[m.from_r][m.from_c] = EMPTY
-            self.grid[m.to_r][m.to_c] = m.piece
+            self.grid[m.to_r][m.to_c] = final_piece
             if any(cond(captured) for cond in self.win_conditions):
                 self.game_over = True
                 self.pending.clear()
