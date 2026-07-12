@@ -40,6 +40,10 @@ class Board:
         self._pieces[to] = piece
         return captured
 
+    def remove_piece(self, piece: Piece) -> None:
+        """Removes `piece` from the board entirely (e.g. captured mid-air, never lands)."""
+        del self._pieces[piece.cell]
+
     def path_clear(self, frm: Position, to: Position) -> bool:
         dr = to.row - frm.row
         dc = to.col - frm.col
