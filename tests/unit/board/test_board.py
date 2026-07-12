@@ -79,6 +79,16 @@ class TestMovePiece:
         assert victim.cell == Position(0, 2)  # captured object's own cell is left untouched
 
 
+class TestRemovePiece:
+
+    def test_removed_piece_no_longer_on_board(self):
+        board = Board(3, 3)
+        piece = board.spawn_piece(WHITE, KING, Position(1, 1))
+        board.remove_piece(piece)
+        assert board.is_empty(Position(1, 1))
+        assert board.piece_at(Position(1, 1)) is None
+
+
 class TestPathClear:
 
     def test_clear_straight_path(self):
