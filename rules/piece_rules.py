@@ -91,5 +91,5 @@ MOVE_RULES: dict[str, MoveRule] = {
     BISHOP: MoveRule(shape_ok=_bishop_shape, sliding=True),
     QUEEN: MoveRule(shape_ok=_queen_shape, sliding=True),
     PAWN: MoveRule(shape_ok=_pawn_shape, sliding=False, capture_ok=_pawn_capture,
-                   start_row_offset=TOP_ROW, on_arrive=_pawn_promote),
+                   start_row_offset=ONE_SQUARE, on_arrive=_pawn_promote),
 }

@@ -1,5 +1,5 @@
 from model.board import Board
-from model.piece import BISHOP, BLACK, KING, KNIGHT, PieceState, QUEEN, ROOK, WHITE
+from model.piece import BISHOP, BLACK, KING, KNIGHT, PAWN, PieceState, QUEEN, ROOK, WHITE
 from model.position import Position
 from rules.rule_engine import OK, MoveValidation, RuleEngine
 
@@ -114,3 +114,23 @@ class TestOnArrive:
         piece = board.spawn_piece(WHITE, ROOK, Position(0, 0))
         make_engine().on_arrive(piece, board)
         assert piece.kind == ROOK
+
+
+class TestPawnDoubleFromStartRow:
+    """On a 5-row board, pawns start one row in from the back rank (row 3
+    for white, row 1 for black), not on the back rank itself."""
+
+    def test_white_pawn_double_from_start_valid(self):
+        board = Board(5, 1)
+        board.spawn_piece(WHITE, PAWN, Position(3, 0))
+        assert make_engine().is_legal_move(board, Position(3, 0), Position(1, 0)) is True
+
+    def test_black_pawn_double_from_start_valid(self):
+        board = Board(5, 1)
+        board.spawn_piece(BLACK, PAWN, Position(1, 0))
+        assert make_engine().is_legal_move(board, Position(1, 0), Position(3, 0)) is True
+
+    def test_white_pawn_double_from_non_start_invalid(self):
+        board = Board(5, 1)
+        board.spawn_piece(WHITE, PAWN, Position(4, 0))
+        assert make_engine().is_legal_move(board, Position(4, 0), Position(2, 0)) is False
