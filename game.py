@@ -1,5 +1,8 @@
 from typing import Callable, NamedTuple
 
+from engine import ARRIVAL, LANDING, Event, resolve_events
+from statuses import Moving
+
 CELL_SIZE = 100
 MS_PER_SQUARE = 1000
 EMPTY = '.'
@@ -130,6 +133,27 @@ def _color(token):
     return None
 
 
+def _resolve_move_arrival(game, event):
+    """Default arrival: the piece lands on its destination, capturing any occupant."""
+    move = event.activity
+    captured = game.grid[move.to_r][move.to_c]
+    rule = MOVE_RULES.get(_piece_type(move.piece))
+    final_piece = rule.on_arrive(move.piece, move.to_r, game.rows) if rule and rule.on_arrive else move.piece
+    game.pending.remove(move)
+    game.status.pop((move.from_r, move.from_c), None)
+    game._cancel_activity_at(move.to_r, move.to_c)
+    game.grid[move.from_r][move.from_c] = EMPTY
+    game.grid[move.to_r][move.to_c] = final_piece
+    game._apply_capture(captured)
+    return True
+
+
+EVENT_RESOLVERS = {
+    ARRIVAL: [_resolve_move_arrival],
+    LANDING: [],
+}
+
+
 class ChessGame:
     def __init__(self, grid, win_conditions=None):
         self.grid = [row[:] for row in grid]
@@ -138,24 +162,34 @@ class ChessGame:
         self.selection = None  # (row, col) of selected piece
         self.clock_ms = 0
         self.pending: list = []
+        self.status: dict = {}  # (row, col) -> status object; absence means idle
         self.game_over = False
         self.win_conditions = win_conditions if win_conditions is not None else WIN_CONDITIONS
 
-    def _settle_moves(self):
+    def _due_events(self):
+        return [Event(m.arrive_time, ARRIVAL, m) for m in self.pending if m.arrive_time <= self.clock_ms]
+
+    def _is_live(self, event):
+        return event.activity in self.pending
+
+    def _settle_events(self):
         if self.game_over:
             return
-        arrived = [m for m in self.pending if m.arrive_time <= self.clock_ms]
-        self.pending = [m for m in self.pending if m.arrive_time > self.clock_ms]
-        for m in arrived:
-            captured = self.grid[m.to_r][m.to_c]
-            rule = MOVE_RULES.get(_piece_type(m.piece))
-            final_piece = rule.on_arrive(m.piece, m.to_r, self.rows) if rule and rule.on_arrive else m.piece
-            self.grid[m.from_r][m.from_c] = EMPTY
-            self.grid[m.to_r][m.to_c] = final_piece
-            if any(cond(captured) for cond in self.win_conditions):
-                self.game_over = True
-                self.pending.clear()
-                return
+        resolve_events(self, self._due_events(), EVENT_RESOLVERS, self._is_live)
+
+    def _apply_capture(self, captured):
+        """Single funnel for every capture: checks the win conditions."""
+        if any(cond(captured) for cond in self.win_conditions):
+            self.game_over = True
+            self.pending.clear()
+            self.status.clear()
+
+    def _cancel_activity_at(self, row, col):
+        """Invalidate whatever the piece at (row, col) had scheduled — a captured
+        piece must not act later, so its still-queued events die with it."""
+        status = self.status.pop((row, col), None)
+        if isinstance(status, Moving) and status.move in self.pending:
+            self.pending.remove(status.move)
 
     def _pixel_to_cell(self, x, y):
         col = x // CELL_SIZE
@@ -165,7 +199,7 @@ class ChessGame:
         return None
 
     def _is_in_flight(self, row, col):
-        return any(m.from_r == row and m.from_c == col for m in self.pending)
+        return isinstance(self.status.get((row, col)), Moving)
 
     def _try_schedule_move(self, from_r, from_c, to_r, to_c):
         if self.game_over:
@@ -174,7 +208,9 @@ class ChessGame:
             piece = self.grid[from_r][from_c]
             distance = max(abs(to_r - from_r), abs(to_c - from_c))
             arrive_time = self.clock_ms + distance * MS_PER_SQUARE
-            self.pending.append(PendingMove(piece, from_r, from_c, to_r, to_c, arrive_time))
+            move = PendingMove(piece, from_r, from_c, to_r, to_c, arrive_time)
+            self.pending.append(move)
+            self.status[(from_r, from_c)] = Moving(move)
             self.selection = None
 
     def _handle_cell_click(self, row, col):
@@ -190,7 +226,7 @@ class ChessGame:
                 self._try_schedule_move(sel_row, sel_col, row, col)
 
     def click(self, x, y):
-        self._settle_moves()
+        self._settle_events()
         if self.game_over:
             return
         cell = self._pixel_to_cell(x, y)
@@ -203,9 +239,9 @@ class ChessGame:
 
     def wait(self, ms):
         self.clock_ms += ms
-        self._settle_moves()
+        self._settle_events()
 
     def print_board(self):
-        self._settle_moves()
+        self._settle_events()
         for row in self.grid:
             print(' '.join(row))

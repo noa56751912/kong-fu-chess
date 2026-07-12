@@ -142,6 +142,35 @@ class TestInFlight:
 
 
 # ---------------------------------------------------------------------------
+# Capture cancels the victim's scheduled move
+# ---------------------------------------------------------------------------
+
+class TestCaptureCancelsMove:
+
+    def test_capturing_a_departing_piece_cancels_its_move(self):
+        # bR (2 squares away) is scheduled to capture wR at (0,0), arriving at
+        # t=2000. wR then starts a 3-square move arriving at t=3000. When bR
+        # captures it at t=2000, wR's still-pending move must die with it —
+        # it must not "resurrect" at (0,3) and erase bR at t=3000.
+        game = make_game(["wR . . .", ". . . .", "bR . . ."])
+        click(game, 2, 0)
+        click(game, 0, 0)           # bR → (0,0), arrives t=2000
+        click(game, 0, 0)           # select wR (still idle at its cell)
+        click(game, 0, 3)           # wR → (0,3), arrives t=3000
+        game.wait(3000)
+        assert game.grid[0][0] == 'bR'   # captor holds the cell
+        assert game.grid[0][3] == EMPTY  # cancelled move never landed
+        assert len(game.pending) == 0
+
+    def test_capture_of_idle_piece_unaffected(self):
+        game = make_game(["wR bQ .", ". . .", ". . ."])
+        click(game, 0, 0)
+        click(game, 0, 1)
+        game.wait(1000)
+        assert game.grid[0][1] == 'wR'
+
+
+# ---------------------------------------------------------------------------
 # Piece movement rules — legal moves
 # ---------------------------------------------------------------------------
 
