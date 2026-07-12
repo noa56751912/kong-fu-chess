@@ -1,0 +1,17 @@
+Board:
+bK . . .
+. . . .
+. . . .
+wR . . bP
+
+Commands:
+click 50 350
+click 250 350
+wait 2000
+print board
+
+Expected:
+bK . . .
+. . . .
+. . . .
+. . wR bP
