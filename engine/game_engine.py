@@ -34,14 +34,15 @@ class GameEngine:
     def game_over(self) -> bool:
         return self.state.game_over
 
-    def click(self, pos: Optional[Position]) -> None:
+    def select(self, pos: Optional[Position]) -> None:
+        """Act on a square being selected, regardless of the input device that chose it."""
         self.arbiter.settle(self.state)
         if self.state.game_over:
             return
         if pos is None:
-            self.state.selection = None   # clicking off the board drops any active selection
+            self.state.selection = None   # selecting off the board drops any active selection
             return
-        self._handle_cell_click(pos)
+        self._handle_selection(pos)
 
     def jump(self, pos: Optional[Position]) -> None:
         self.arbiter.settle(self.state)
@@ -62,7 +63,7 @@ class GameEngine:
         self.arbiter.settle(self.state)
         return self.state.board
 
-    def _handle_cell_click(self, pos: Position) -> None:
+    def _handle_selection(self, pos: Position) -> None:
         piece = self.state.board.piece_at(pos)
         if self.state.selection is None:
             if piece is not None and piece.state is PieceState.IDLE:

@@ -23,8 +23,8 @@ class TestWait:
 
     def test_piece_arrives_after_accumulated_wait(self):
         engine = make_engine(["wK . .", ". . .", ". . ."])
-        engine.click(Position(0, 0))
-        engine.click(Position(0, 1))   # 1 square -> 1000 ms
+        engine.select(Position(0, 0))
+        engine.select(Position(0, 1))   # 1 square -> 1000 ms
         engine.wait(500)
         engine.wait(500)               # total 1000 ms
         board = engine.snapshot()

@@ -10,6 +10,7 @@ from rules.piece_rules import MOVE_RULES
 
 
 def _run_on_arrive(piece: Piece, board: Board) -> None:
+    """Run the piece kind's on-arrive rule, if it has one (e.g. pawn promotion)."""
     rule = MOVE_RULES.get(piece.kind)
     if rule and rule.on_arrive:
         rule.on_arrive(piece, board)
@@ -77,9 +78,11 @@ class RealTimeArbiter:
         self.status: dict[Position, object] = {}
 
     def is_busy(self, pos: Position) -> bool:
+        """Return whether a square is currently occupied by an in-progress move or jump."""
         return pos in self.status
 
     def schedule_move(self, piece: Piece, frm: Position, to: Position, now_ms: int) -> PendingMove:
+        """Queue a timed move from frm to to, marking the origin square as moving."""
         distance = max(abs(to.row - frm.row), abs(to.col - frm.col))
         move = PendingMove(piece, frm, to, now_ms + distance * MS_PER_SQUARE)
         self.pending.append(move)
@@ -88,12 +91,14 @@ class RealTimeArbiter:
         return move
 
     def schedule_jump(self, piece: Piece, pos: Position, now_ms: int) -> PendingJump:
+        """Queue a timed in-place jump, marking the square as airborne."""
         jump = PendingJump(piece, pos, now_ms + JUMP_DURATION_MS)
         self.status[pos] = Jumping(jump)
         piece.state = PieceState.MOVING
         return jump
 
     def settle(self, game_state: GameState) -> None:
+        """Resolve every move/jump event that has come due at the game clock's current time."""
         if game_state.game_over:
             return
         events = self._due_events(game_state.clock_ms)
@@ -108,6 +113,7 @@ class RealTimeArbiter:
                     break
 
     def _due_events(self, clock_ms: int) -> list[Event]:
+        """Collect all pending moves and jumps whose arrival/landing time has passed."""
         due_moves = [Event(m.arrive_time, ARRIVAL, m)
                      for m in self.pending if m.arrive_time <= clock_ms]
         due_jumps = [Event(s.jump.end_time, LANDING, s.jump)
@@ -116,12 +122,15 @@ class RealTimeArbiter:
         return due_moves + due_jumps
 
     def _is_live(self, event: Event) -> bool:
+        """Return whether the event's piece is still in play (not captured beforehand)."""
         return event.activity.piece.state is not PieceState.CAPTURED
 
     def _discard(self, event: Event) -> None:
+        """Drop a stale event whose piece was captured before the event could resolve."""
         if event.kind == ARRIVAL and event.activity in self.pending:
             self.pending.remove(event.activity)
 
     @staticmethod
     def _sort_key(event: Event):
+        """Order due events by time, then arrivals before landings on the same tick."""
         return event.time, EVENT_ORDER[event.kind]

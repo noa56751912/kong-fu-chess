@@ -10,7 +10,7 @@ class Controller:
 
     def click(self, x: int, y: int) -> None:
         pos = pixel_to_cell(x, y, self.engine.state.board)
-        self.engine.click(pos)
+        self.engine.select(pos)
 
     def jump(self, x: int, y: int) -> None:
         pos = pixel_to_cell(x, y, self.engine.state.board)
