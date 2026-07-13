@@ -36,7 +36,6 @@ class GameEngine:
 
     def select(self, pos: Optional[Position]) -> None:
         """Act on a square being selected, regardless of the input device that chose it."""
-        self.arbiter.settle(self.state)
         if self.state.game_over:
             return
         if pos is None:
@@ -45,7 +44,6 @@ class GameEngine:
         self._handle_selection(pos)
 
     def jump(self, pos: Optional[Position]) -> None:
-        self.arbiter.settle(self.state)
         if self.state.game_over or pos is None:
             return
         piece = self.state.board.piece_at(pos)
@@ -54,13 +52,11 @@ class GameEngine:
         self.arbiter.schedule_jump(piece, pos, self.state.clock_ms)
 
     def wait(self, ms: int) -> None:
-        self.arbiter.settle(self.state)
         self.state.clock_ms += ms
         self.arbiter.settle(self.state)
 
     def snapshot(self) -> Board:
-        """Settles pending events and returns the board - the read side of print_board."""
-        self.arbiter.settle(self.state)
+        """Returns the board as of the last time-advancing settle - the read side of print_board."""
         return self.state.board
 
     def _handle_selection(self, pos: Position) -> None:
