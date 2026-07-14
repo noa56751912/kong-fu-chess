@@ -1,6 +1,6 @@
 from model.board import Board
 from model.game_state import GameState
-from model.piece import BLACK, KING, KNIGHT, PieceState, ROOK, WHITE
+from model.piece import BLACK, KING, KNIGHT, ROOK, WHITE
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 
@@ -32,7 +32,7 @@ class TestAirborneDefense:
         assert board.piece_at(Position(0, 2)) is target   # jumper kept its cell
         assert board.is_empty(Position(0, 0))              # arriver removed from play
         assert len(arbiter.pending) == 0
-        assert mover.state is PieceState.CAPTURED
+        assert mover.captured is True
 
     def test_arrival_after_landing_is_a_normal_capture(self):
         board, state, arbiter, mover, target = self._setup_attack()
@@ -73,4 +73,7 @@ class TestAirborneDefense:
         arbiter.schedule_jump(target, Position(0, 2), state.clock_ms)
         state.clock_ms = 2500   # defense at t=2000, landing at t=2500
         arbiter.settle(state)
-        assert target.state is PieceState.IDLE
+        assert target.state == "short_rest"   # briefly resting after defending
+        state.clock_ms = 3500                 # short_rest elapses
+        arbiter.settle(state)
+        assert target.is_selectable

@@ -1,5 +1,6 @@
 from model.board import Board
-from model.piece import BISHOP, BLACK, KING, KNIGHT, PAWN, PieceState, QUEEN, ROOK, WHITE
+from model.piece import BISHOP, BLACK, KING, KNIGHT, PAWN, QUEEN, ROOK, WHITE
+from rules.piece_config import MOVE
 from model.position import Position
 from rules.rule_engine import OK, MoveValidation, RuleEngine
 
@@ -75,7 +76,7 @@ class TestBusyPieceIsNoLongerRuleEngineConcern:
         # not something RuleEngine.evaluate_move rejects on its own.
         board = Board(3, 3)
         piece = board.spawn_piece(WHITE, KING, Position(0, 0))
-        piece.state = PieceState.MOVING
+        piece.state = MOVE
         assert make_engine().evaluate_move(board, Position(0, 0), Position(0, 1)) == OK
 
 

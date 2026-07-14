@@ -1,0 +1,26 @@
+Board:
+wK . .
+. . .
+. . .
+
+Commands:
+click 50 50
+click 150 50
+wait 1000
+click 150 50
+click 250 50
+wait 100
+print board
+wait 4000
+click 150 50
+click 250 50
+wait 1000
+print board
+
+Expected:
+. wK .
+. . .
+. . .
+. . wK
+. . .
+. . .

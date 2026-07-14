@@ -40,7 +40,7 @@ class TestWinConditions:
         board.spawn_piece(BLACK, KING, Position(0, 1))
         queen = board.spawn_piece(WHITE, QUEEN, Position(0, 2))
         arbiter.schedule_move(rook, Position(0, 0), Position(0, 1), state.clock_ms)  # captures king at t=1000
-        arbiter.pending.append(PendingMove(queen, Position(0, 2), Position(0, 4), 3000))
+        arbiter.pending.append(PendingMove(queen, Position(0, 2), Position(0, 4), 0, 3000))
         assert len(arbiter.pending) == 2
         state.clock_ms = 1000
         arbiter.settle(state)

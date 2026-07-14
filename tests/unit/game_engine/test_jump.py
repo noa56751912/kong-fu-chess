@@ -1,7 +1,7 @@
 from boardio.board_parser import build_board
 from engine.game_engine import GameEngine
 from model.position import Position
-from realtime.motion import JUMP_DURATION_MS, Moving
+from realtime.motion import JUMP_DURATION_MS, Moving, rest_duration_ms
 
 
 def make_engine(rows):
@@ -48,10 +48,19 @@ class TestJump:
         engine.jump(None)
         assert engine.arbiter.status == {}
 
-    def test_piece_can_move_again_after_landing(self):
+    def test_still_resting_immediately_after_landing(self):
         engine = make_engine(["wK . .", ". . .", ". . ."])
         engine.jump(Position(0, 0))
         engine.wait(JUMP_DURATION_MS)
+        engine.select(Position(0, 0))
+        engine.select(Position(0, 1))
+        assert len(engine.arbiter.pending) == 0
+
+    def test_piece_can_move_again_after_landing_and_resting(self):
+        engine = make_engine(["wK . .", ". . .", ". . ."])
+        engine.jump(Position(0, 0))
+        engine.wait(JUMP_DURATION_MS)
+        engine.wait(rest_duration_ms("short_rest"))
         engine.select(Position(0, 0))
         engine.select(Position(0, 1))
         assert len(engine.arbiter.pending) == 1

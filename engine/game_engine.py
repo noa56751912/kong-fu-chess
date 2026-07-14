@@ -3,7 +3,6 @@ from typing import Optional
 
 from model.board import Board
 from model.game_state import GameState
-from model.piece import PieceState
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import OK, RuleEngine
@@ -47,7 +46,7 @@ class GameEngine:
         if self.state.game_over or pos is None:
             return
         piece = self.state.board.piece_at(pos)
-        if piece is None or piece.state is not PieceState.IDLE:
+        if piece is None or not piece.is_selectable:
             return
         self.arbiter.schedule_jump(piece, pos, self.state.clock_ms)
 
@@ -62,13 +61,13 @@ class GameEngine:
     def _handle_selection(self, pos: Position) -> None:
         piece = self.state.board.piece_at(pos)
         if self.state.selection is None:
-            if piece is not None and piece.state is PieceState.IDLE:
+            if piece is not None and piece.is_selectable:
                 self.state.selection = pos
             return
         sel_piece = self.state.board.piece_at(self.state.selection)
         same_color = piece is not None and piece.color == sel_piece.color
         if same_color:
-            if piece.state is PieceState.IDLE:
+            if piece.is_selectable:
                 self.state.selection = pos
         else:
             self._try_schedule_move(self.state.selection, pos)
@@ -77,7 +76,7 @@ class GameEngine:
         if self.state.game_over:
             return MoveResult(False, GAME_OVER)
         piece = self.state.board.piece_at(frm)
-        if piece is not None and piece.state is not PieceState.IDLE:
+        if piece is not None and not piece.is_selectable:
             return MoveResult(False, MOTION_IN_PROGRESS)
         reason = self.rule_engine.evaluate_move(self.state.board, frm, to)
         if reason != OK:
