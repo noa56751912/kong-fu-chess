@@ -4,17 +4,20 @@ from view.img import Img
 
 
 class SpriteCache:
-    """Loads and caches one Img per (kind, color), scaled to a board cell."""
+    """Loads and caches one Img per (kind, color, state, frame index), scaled to a board cell."""
 
     def __init__(self, cell_size: int = CELL_SIZE):
         self.cell_size = cell_size
-        self._idle: dict[tuple[str, str], Img] = {}
+        self._cache: dict[tuple[str, str, str, int], Img] = {}
+
+    def sprite(self, kind: str, color: str, state: str, frame_idx: int) -> Img:
+        key = (kind, color, state, frame_idx)
+        img = self._cache.get(key)
+        if img is None:
+            path = PIECE_CONFIG.get(kind, color, state).frame_paths[frame_idx]
+            img = Img().read(path, size=(self.cell_size, self.cell_size), keep_aspect=True)
+            self._cache[key] = img
+        return img
 
     def idle_sprite(self, kind: str, color: str) -> Img:
-        key = (kind, color)
-        sprite = self._idle.get(key)
-        if sprite is None:
-            path = PIECE_CONFIG.get(kind, color, IDLE).frame_paths[0]
-            sprite = Img().read(path, size=(self.cell_size, self.cell_size), keep_aspect=True)
-            self._idle[key] = sprite
-        return sprite
+        return self.sprite(kind, color, IDLE, 0)

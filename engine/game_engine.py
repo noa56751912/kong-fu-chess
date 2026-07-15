@@ -4,6 +4,7 @@ from typing import Optional
 from model.board import Board
 from model.game_state import GameState
 from model.position import Position
+from realtime.motion import PendingMove
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import OK, RuleEngine
 
@@ -57,6 +58,14 @@ class GameEngine:
     def snapshot(self) -> Board:
         """Returns the board as of the last time-advancing settle - the read side of print_board."""
         return self.state.board
+
+    def now_ms(self) -> int:
+        """The engine's authoritative clock, for a renderer to interpolate against."""
+        return self.state.clock_ms
+
+    def in_flight_moves(self) -> list[PendingMove]:
+        """Read-only view of moves currently in transit, for a renderer to interpolate their position."""
+        return list(self.arbiter.pending)
 
     def _handle_selection(self, pos: Position) -> None:
         piece = self.state.board.piece_at(pos)
