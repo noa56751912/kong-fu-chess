@@ -13,6 +13,15 @@ BISHOP = 'B'
 KNIGHT = 'N'
 PAWN = 'P'
 
+POINT_VALUES = {
+    KING: 0,
+    QUEEN: 9,
+    ROOK: 5,
+    BISHOP: 3,
+    KNIGHT: 3,
+    PAWN: 1,
+}
+
 
 @dataclass
 class Piece:

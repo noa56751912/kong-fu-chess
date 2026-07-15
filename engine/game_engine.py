@@ -3,6 +3,7 @@ from typing import Optional
 
 from model.board import Board
 from model.game_state import GameState
+from model.move_record import MoveRecord
 from model.position import Position
 from realtime.motion import PendingMove
 from realtime.real_time_arbiter import RealTimeArbiter
@@ -91,5 +92,6 @@ class GameEngine:
         if reason != OK:
             return MoveResult(False, reason)
         self.arbiter.schedule_move(piece, frm, to, self.state.clock_ms)
+        self.state.moves.append(MoveRecord(piece.color, piece.kind, frm, to, self.state.clock_ms))
         self.state.selection = None
         return MoveResult(True, OK)

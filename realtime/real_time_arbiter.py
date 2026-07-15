@@ -1,6 +1,6 @@
 from model.board import Board
 from model.game_state import GameState
-from model.piece import Piece
+from model.piece import Piece, POINT_VALUES
 from model.position import Position
 from rules.piece_config import IDLE, JUMP, MOVE, PIECE_CONFIG
 from realtime.motion import (
@@ -18,10 +18,12 @@ def _run_on_arrive(piece: Piece, board: Board) -> None:
         rule.on_arrive(piece, board)
 
 
-def _apply_capture(captured: Piece, game_state: GameState, arbiter: "RealTimeArbiter") -> None:
-    """Single funnel for every capture: checks the win conditions."""
+def _apply_capture(captured: Piece, capturer_color: str, game_state: GameState, arbiter: "RealTimeArbiter") -> None:
+    """Single funnel for every capture: scores it, then checks the win conditions."""
+    game_state.score[capturer_color] += POINT_VALUES[captured.kind]
     if any(cond(captured) for cond in game_state.win_conditions):
         game_state.game_over = True
+        game_state.winner = capturer_color
         arbiter.pending.clear()
         arbiter.rests.clear()
         arbiter.status.clear()
@@ -52,7 +54,7 @@ def _resolve_airborne_defense(arbiter: "RealTimeArbiter", game_state: GameState,
     arbiter.status.pop(move.frm, None)
     game_state.board.remove_piece(move.piece)
     move.piece.captured = True
-    _apply_capture(move.piece, game_state, arbiter)
+    _apply_capture(move.piece, defender_status.jump.piece.color, game_state, arbiter)
     return True
 
 
@@ -68,7 +70,7 @@ def _resolve_move_arrival(arbiter: "RealTimeArbiter", game_state: GameState, eve
         captured.captured = True
     _run_on_arrive(move.piece, board)   # promotion runs after the captured snapshot is taken
     if captured is not None:
-        _apply_capture(captured, game_state, arbiter)
+        _apply_capture(captured, move.piece.color, game_state, arbiter)
     return True
 
 
