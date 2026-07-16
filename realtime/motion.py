@@ -10,8 +10,12 @@ from rules.piece_config import JUMP, MOVE, PIECE_CONFIG
 # MS_PER_SQUARE/JUMP_DURATION_MS timing exactly for that common case, while
 # still deriving genuinely different durations for a piece whose own config
 # actually differs (e.g. a slower jumper really does jump slower).
-METERS_PER_CELL = 1.5
+METERS_PER_CELL = 1.1
 JUMP_REFERENCE_DISTANCE_M = 3.0
+
+# Single knob for overall game pace: multiplies every move and jump duration
+# uniformly (rests are unaffected). >1 slows the game down, <1 speeds it up.
+TIME_SCALE = 1.5
 
 REST_DURATIONS = {
     "short_rest": 1000,
@@ -35,12 +39,12 @@ EVENT_ORDER = {ARRIVAL: 0, LANDING: 1, REST_DONE: 2}
 
 def move_duration_ms(kind: str, color: str, distance: int) -> int:
     speed = PIECE_CONFIG.get(kind, color, MOVE).speed_m_per_sec
-    return round(distance * METERS_PER_CELL / speed * 1000)
+    return round(distance * METERS_PER_CELL / speed * 1000 * TIME_SCALE)
 
 
 def jump_duration_ms(kind: str, color: str) -> int:
     speed = PIECE_CONFIG.get(kind, color, JUMP).speed_m_per_sec
-    return round(JUMP_REFERENCE_DISTANCE_M / speed * 1000)
+    return round(JUMP_REFERENCE_DISTANCE_M / speed * 1000 * TIME_SCALE)
 
 
 def rest_duration_ms(state: str) -> int:

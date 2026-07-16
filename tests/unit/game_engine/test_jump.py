@@ -23,6 +23,25 @@ class TestJump:
         engine.select(Position(0, 0))
         assert engine.state.selection is None
 
+    def test_resting_piece_cannot_be_selected(self):
+        engine = make_engine(["wK . .", ". . .", ". . ."])
+        engine.jump(Position(0, 0))
+        engine.wait(JUMP_DURATION_MS)   # lands into its post-jump rest
+        engine.select(Position(0, 0))
+        assert engine.state.selection is None
+
+    def test_pawn_can_walk_into_a_jumping_enemys_square_and_gets_captured_on_landing(self):
+        engine = make_engine(["bP", "wP"])
+        engine.jump(Position(0, 0))                    # black pawn jumps in place
+        engine.select(Position(1, 0))
+        engine.select(Position(0, 0))                   # white pawn steps straight into it
+        assert len(engine.arbiter.pending) == 1
+        engine.wait(JUMP_DURATION_MS)                    # both the jump and the step land at once
+        board = engine.snapshot()
+        assert board.is_empty(Position(1, 0))            # the white pawn never made it down
+        assert board.piece_at(Position(0, 0)).color == 'b'
+        assert engine.state.score['b'] == 1
+
     def test_jumping_piece_cannot_move(self):
         engine = make_engine(["wK . .", ". . .", ". . ."])
         engine.select(Position(0, 0))     # select while still idle

@@ -5,7 +5,9 @@ import cv2
 from boardio.board_parser import build_board
 from engine.game_engine import GameEngine
 from input.controller import Controller
-from view.image_view import BOTTOM_MARGIN, LOG_PANEL_WIDTH, TOP_MARGIN, WINDOW_NAME, ImageView
+from view.image_view import (
+    BOTTOM_MARGIN, LEFT_PANEL_WIDTH, RIGHT_PANEL_WIDTH, TOP_MARGIN, WINDOW_NAME, ImageView,
+)
 
 STARTING_POSITION = [
     "bR bN bB bQ bK bB bN bR".split(),
@@ -49,7 +51,7 @@ def main() -> None:
 
     board = engine.state.board
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW_NAME, board.cols * view.cell_size + LOG_PANEL_WIDTH,
+    cv2.resizeWindow(WINDOW_NAME, LEFT_PANEL_WIDTH + board.cols * view.cell_size + RIGHT_PANEL_WIDTH,
                       TOP_MARGIN + board.rows * view.cell_size + BOTTOM_MARGIN)
     cv2.setMouseCallback(WINDOW_NAME, _mouse_callback, (controller_holder, view))
 
@@ -67,7 +69,7 @@ def main() -> None:
         window_size = (win_w, win_h) if win_w > 0 and win_h > 0 else None
         view.render(board, engine.now_ms(), engine.in_flight_moves(), engine.state.selection,
                     window_size, engine.state.score, engine.state.moves,
-                    engine.game_over, engine.state.winner)
+                    engine.game_over, engine.state.winner, engine.selection_targets())
 
         key = cv2.waitKey(1) & 0xFF
         if key in QUIT_KEYS:

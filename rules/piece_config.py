@@ -2,7 +2,7 @@ import json
 import pathlib
 from dataclasses import dataclass
 
-ASSET_ROOT = pathlib.Path(__file__).resolve().parent.parent / "assets" / "pieces2"
+ASSET_ROOT = pathlib.Path(__file__).resolve().parent.parent / "assets" / "pieces_classic"
 
 IDLE = "idle"
 MOVE = "move"

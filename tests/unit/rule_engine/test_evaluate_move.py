@@ -1,6 +1,6 @@
 from model.board import Board
 from model.piece import BISHOP, BLACK, KING, KNIGHT, PAWN, QUEEN, ROOK, WHITE
-from rules.piece_config import MOVE
+from rules.piece_config import JUMP, MOVE
 from model.position import Position
 from rules.rule_engine import OK, MoveValidation, RuleEngine
 
@@ -115,6 +115,42 @@ class TestOnArrive:
         piece = board.spawn_piece(WHITE, ROOK, Position(0, 0))
         make_engine().on_arrive(piece, board)
         assert piece.kind == ROOK
+
+
+class TestAirborneEnemySquare:
+    """An enemy mid-jump hasn't landed, so its square counts as empty."""
+
+    def test_pawn_can_step_straight_into_a_jumping_enemys_square(self):
+        board = Board(3, 1)
+        board.spawn_piece(WHITE, PAWN, Position(1, 0))
+        enemy = board.spawn_piece(BLACK, PAWN, Position(0, 0))
+        enemy.state = JUMP
+        assert make_engine().evaluate_move(board, Position(1, 0), Position(0, 0)) == OK
+
+    def test_pawn_cannot_step_diagonally_into_a_jumping_enemys_square(self):
+        # Treated as empty, not as a capture target: a pawn still can't
+        # enter it the way it would a normal occupied square (diagonally).
+        board = Board(3, 2)
+        board.spawn_piece(WHITE, PAWN, Position(1, 0))
+        enemy = board.spawn_piece(BLACK, PAWN, Position(0, 1))
+        enemy.state = JUMP
+        result = make_engine().evaluate_move(board, Position(1, 0), Position(0, 1))
+        assert result == MoveValidation.INVALID_SHAPE
+
+    def test_grounded_enemy_still_blocks_straight_pawn_move(self):
+        board = Board(3, 1)
+        board.spawn_piece(WHITE, PAWN, Position(1, 0))
+        board.spawn_piece(BLACK, PAWN, Position(0, 0))
+        result = make_engine().evaluate_move(board, Position(1, 0), Position(0, 0))
+        assert result == MoveValidation.INVALID_SHAPE
+
+    def test_same_color_jumping_piece_still_blocks_its_square(self):
+        board = Board(3, 1)
+        board.spawn_piece(WHITE, PAWN, Position(1, 0))
+        friendly = board.spawn_piece(WHITE, KING, Position(0, 0))
+        friendly.state = JUMP
+        result = make_engine().evaluate_move(board, Position(1, 0), Position(0, 0))
+        assert result == MoveValidation.SAME_COLOR_DESTINATION
 
 
 class TestPawnDoubleFromStartRow:

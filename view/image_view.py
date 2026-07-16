@@ -9,7 +9,7 @@ from model.move_record import MoveRecord
 from model.piece import BLACK, WHITE
 from model.position import Position
 from realtime.motion import PendingMove, REST_DURATIONS
-from rules.piece_config import JUMP, PIECE_CONFIG, StateConfig
+from rules.piece_config import JUMP, MOVE, PIECE_CONFIG, StateConfig
 from view.img import Img
 from view.renderer import Renderer
 from view.sprites import SpriteCache
@@ -19,25 +19,28 @@ DARK_SQUARE = (86, 150, 118)  # BGR
 SELECTION_COLOR = (0, 215, 255, 255)  # BGRA, gold
 REST_FILL_COLOR = (60, 200, 255)  # BGR, amber
 REST_FILL_ALPHA = 0.55
+TARGET_COLOR = (80, 200, 80)  # BGR, green
+TARGET_ALPHA = 0.40
 
 # Extra UI chrome around the board proper: a score strip above (black, who
-# starts at the top of the board) and below (white), plus a move-log panel
-# to the right. Kept as fixed pixel margins so board pixel space - and thus
-# input/board_mapper's pixel_to_cell - stays untouched; only the *display*
-# offset (see _board_origin) shifts where that space is painted.
+# starts at the top of the board) and below (white), plus a move-log column
+# on either side (white's moves on the left, black's on the right). Kept as
+# fixed pixel margins so board pixel space - and thus input/board_mapper's
+# pixel_to_cell - stays untouched; only the *display* offset (LEFT_PANEL_WIDTH,
+# TOP_MARGIN) shifts where that space is painted (see to_board_coords).
 TOP_MARGIN = 44
 BOTTOM_MARGIN = 44
-LOG_PANEL_WIDTH = 300
-LOG_COLUMN_WIDTH = LOG_PANEL_WIDTH // 2
+LEFT_PANEL_WIDTH = 220
+RIGHT_PANEL_WIDTH = 220
 PANEL_BG = (40, 40, 40)  # BGR
 TEXT_COLOR = (255, 255, 255, 255)  # BGRA
-MAX_LOG_LINES = 20
+MAX_LOG_LINES = 24
 
-# States whose sprite frames actually animate. Idle and move hold their first
-# frame (idle sits still; move is already animated positionally by the board
-# interpolation), but a jump stays on one cell for its whole airborne window,
-# so without its own frame animation it would look frozen until it lands.
-ANIMATED_STATES = set(REST_DURATIONS) | {JUMP}
+# States whose sprite frames actually animate. Idle holds its first frame
+# (it sits still); move and jump cycle through their frames as the piece
+# travels, so the game reads as animated rather than sliding/hopping a
+# frozen sprite around the board.
+ANIMATED_STATES = set(REST_DURATIONS) | {JUMP, MOVE}
 
 WINDOW_NAME = "Image"  # matches Img.show()'s hardcoded title
 
@@ -62,7 +65,7 @@ class ImageView(Renderer):
         # destination already has 4 channels: against a 3-channel canvas it
         # silently drops the sprite's alpha and pastes it opaquely instead.
         board_w, board_h = cols * self.cell_size, rows * self.cell_size
-        width = board_w + LOG_PANEL_WIDTH
+        width = LEFT_PANEL_WIDTH + board_w + RIGHT_PANEL_WIDTH
         height = TOP_MARGIN + board_h + BOTTOM_MARGIN
         canvas = np.empty((height, width, 4), dtype=np.uint8)
         canvas[..., 3] = 255
@@ -70,7 +73,8 @@ class ImageView(Renderer):
         for row in range(rows):
             for col in range(cols):
                 color = LIGHT_SQUARE if (row + col) % 2 == 0 else DARK_SQUARE
-                x, y = col * self.cell_size, TOP_MARGIN + row * self.cell_size
+                x = LEFT_PANEL_WIDTH + col * self.cell_size
+                y = TOP_MARGIN + row * self.cell_size
                 canvas[y:y + self.cell_size, x:x + self.cell_size, :3] = color
         background = Img()
         background.img = canvas
@@ -106,9 +110,25 @@ class ImageView(Renderer):
 
     def _draw_selection(self, frame: Img, pos: Position) -> None:
         x, y = cell_to_pixel(pos, self.cell_size)
+        x += LEFT_PANEL_WIDTH
         y += TOP_MARGIN
         cv2.rectangle(frame.img, (x, y), (x + self.cell_size - 1, y + self.cell_size - 1),
                        SELECTION_COLOR, 3)
+
+    def _draw_move_targets(self, frame: Img, board: Board, targets: Iterable[Position]) -> None:
+        overlay = frame.img.copy()
+        any_drawn = False
+        for pos in targets:
+            if not board.is_empty(pos):
+                continue  # occupied squares (captures) aren't highlighted as reachable
+            x, y = cell_to_pixel(pos, self.cell_size)
+            x += LEFT_PANEL_WIDTH
+            y += TOP_MARGIN
+            cv2.rectangle(overlay, (x, y), (x + self.cell_size - 1, y + self.cell_size - 1),
+                          TARGET_COLOR, -1)
+            any_drawn = True
+        if any_drawn:
+            cv2.addWeighted(overlay, TARGET_ALPHA, frame.img, 1 - TARGET_ALPHA, 0, frame.img)
 
     def _draw_rest_fill(self, frame: Img, pos: Position, state: str, elapsed_ms: int) -> None:
         duration = REST_DURATIONS.get(state)
@@ -118,6 +138,7 @@ class ImageView(Renderer):
         if fraction <= 0.0:
             return
         x, y = cell_to_pixel(pos, self.cell_size)
+        x += LEFT_PANEL_WIDTH
         y += TOP_MARGIN
         height = round(self.cell_size * fraction)
         top = y + (self.cell_size - height)
@@ -152,7 +173,7 @@ class ImageView(Renderer):
         own top-left, independent of the score/log chrome drawn around it)."""
         scale, x_off, y_off = self._display_transform
         bx, by = (x - x_off) / scale, (y - y_off) / scale
-        return round(bx), round(by - TOP_MARGIN)
+        return round(bx - LEFT_PANEL_WIDTH), round(by - TOP_MARGIN)
 
     @staticmethod
     def _pos_label(pos: Position, rows: int) -> str:
@@ -166,10 +187,15 @@ class ImageView(Renderer):
         total_seconds = int(max(0, ms) // 1000)
         return f"{total_seconds // 60:02d}:{total_seconds % 60:02d}"
 
+    @staticmethod
+    def _put_centered(frame: Img, text: str, y: int, font_size: float, thickness: int) -> None:
+        (text_w, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_size, thickness)
+        w = frame.img.shape[1]
+        frame.put_text(text, (w - text_w) // 2, y, font_size, TEXT_COLOR, thickness)
+
     def _draw_score_bars(self, frame: Img, score: dict[str, int]) -> None:
-        frame.put_text(f"Black: {score.get(BLACK, 0)}", 10, TOP_MARGIN - 14, 0.6, TEXT_COLOR, 2)
-        bottom_y = frame.img.shape[0] - 14
-        frame.put_text(f"White: {score.get(WHITE, 0)}", 10, bottom_y, 0.6, TEXT_COLOR, 2)
+        self._put_centered(frame, f"Black: {score.get(BLACK, 0)}", TOP_MARGIN - 14, 0.6, 2)
+        self._put_centered(frame, f"White: {score.get(WHITE, 0)}", frame.img.shape[0] - 14, 0.6, 2)
 
     def _draw_move_column(self, frame: Img, x: int, header: str, moves: list[MoveRecord], rows: int) -> None:
         y = TOP_MARGIN + 20
@@ -182,10 +208,11 @@ class ImageView(Renderer):
             y += 20
 
     def _draw_move_log(self, frame: Img, board_w: int, rows: int, move_log: list[MoveRecord]) -> None:
+        """White's moves in the left column, black's in the right - one panel per side."""
         white_moves = [record for record in move_log if record.color == WHITE]
         black_moves = [record for record in move_log if record.color == BLACK]
-        self._draw_move_column(frame, board_w + 8, "White", white_moves, rows)
-        self._draw_move_column(frame, board_w + LOG_COLUMN_WIDTH + 4, "Black", black_moves, rows)
+        self._draw_move_column(frame, 8, "White", white_moves, rows)
+        self._draw_move_column(frame, LEFT_PANEL_WIDTH + board_w + 8, "Black", black_moves, rows)
 
     def _draw_game_over(self, frame: Img, winner: Optional[str], score: dict[str, int]) -> None:
         h, w = frame.img.shape[:2]
@@ -199,14 +226,10 @@ class ImageView(Renderer):
         black_line = f"Black score: {score.get(BLACK, 0)}"
         subtitle = "Press R to restart"
 
-        def centered(text: str, y: int, font_size: float, thickness: int) -> None:
-            (text_w, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_size, thickness)
-            frame.put_text(text, (w - text_w) // 2, y, font_size, TEXT_COLOR, thickness)
-
-        centered(title, h // 2 - 40, 1.0, 2)
-        centered(white_line, h // 2, 0.7, 2)
-        centered(black_line, h // 2 + 30, 0.7, 2)
-        centered(subtitle, h // 2 + 70, 0.7, 2)
+        self._put_centered(frame, title, h // 2 - 40, 1.0, 2)
+        self._put_centered(frame, white_line, h // 2, 0.7, 2)
+        self._put_centered(frame, black_line, h // 2 + 30, 0.7, 2)
+        self._put_centered(frame, subtitle, h // 2 + 70, 0.7, 2)
 
     def render(self, board: Board, now_ms: int, in_flight_moves: Iterable[PendingMove],
                selection: Optional[Position] = None,
@@ -214,10 +237,14 @@ class ImageView(Renderer):
                score: Optional[dict[str, int]] = None,
                move_log: Optional[list[MoveRecord]] = None,
                game_over: bool = False,
-               winner: Optional[str] = None) -> None:
+               winner: Optional[str] = None,
+               selection_targets: Optional[Iterable[Position]] = None) -> None:
         background = self._ensure_background(board)
         frame = Img()
         frame.img = background.img.copy()
+
+        if selection_targets is not None:
+            self._draw_move_targets(frame, board, selection_targets)
 
         moves_by_piece_id = {move.piece.id: move for move in in_flight_moves}
         for pos, piece in board:
@@ -225,18 +252,34 @@ class ImageView(Renderer):
             if move is not None:
                 x, y = self._interpolated_pixel(move, now_ms, self.cell_size)
                 entry_time = move.start_time
+                # A move always sits between two rest-tracked states, and
+                # while it's in flight _entry_time() below is never called
+                # for this piece - so if it lands back in a same-named rest
+                # state (e.g. long_rest again), a stale cached timestamp
+                # from its *previous* time in that state would still match
+                # and get reused, making elapsed look huge from frame one.
+                # Dropping the cache on every in-flight frame guarantees the
+                # next non-in-flight sighting is always treated as fresh.
+                self._state_entry.pop(piece.id, None)
             else:
                 x, y = cell_to_pixel(pos, self.cell_size)
                 entry_time = self._entry_time(piece, now_ms)
+            x += LEFT_PANEL_WIDTH
             y += TOP_MARGIN
 
             elapsed = max(0, now_ms - entry_time)
-            self._draw_rest_fill(frame, pos, piece.state, elapsed)
 
             config = PIECE_CONFIG.get(piece.kind, piece.color, piece.state)
             frame_idx = self._frame_index(config, piece.state, elapsed)
             sprite = self.sprites.sprite(piece.kind, piece.color, piece.state, frame_idx)
             sprite.draw_on(frame, x, y)
+
+            # Drawn *after* the sprite (not before): the piece art's body is
+            # fully opaque, so a fill painted underneath it is invisible
+            # everywhere except the sprite's thin transparent margin - drawing
+            # it as a semi-transparent overlay on top instead tints the piece
+            # itself, so the cooldown draining is actually visible.
+            self._draw_rest_fill(frame, pos, piece.state, elapsed)
 
         if selection is not None:
             self._draw_selection(frame, selection)
