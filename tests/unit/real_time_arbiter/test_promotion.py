@@ -17,7 +17,7 @@ class TestPromotionCombinedWithCapture:
         arbiter = RealTimeArbiter()
         king = board.spawn_piece(BLACK, KING, Position(0, 0))
         pawn = board.spawn_piece(WHITE, PAWN, Position(1, 1))
-        arbiter.schedule_move(pawn, Position(1, 1), Position(0, 0), state.clock_ms)
+        arbiter.schedule_move(board, pawn, Position(1, 1), Position(0, 0), state.clock_ms)
         state.clock_ms = MS_PER_SQUARE
         arbiter.settle(state)
         assert state.game_over is True

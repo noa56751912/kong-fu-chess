@@ -112,7 +112,7 @@ class GameEngine:
             return MoveResult(False, reason)
         if self._is_destination_reserved(to, piece.color):
             return MoveResult(False, DESTINATION_RESERVED)
-        self.arbiter.schedule_move(piece, frm, to, self.state.clock_ms)
+        self.arbiter.schedule_move(self.state.board, piece, frm, to, self.state.clock_ms)
         self.state.moves.append(MoveRecord(piece.color, piece.kind, frm, to, self.state.clock_ms))
         self.state.selection = None
         return MoveResult(True, OK)

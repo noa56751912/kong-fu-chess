@@ -28,6 +28,28 @@ class Board:
     def is_empty(self, pos: Position) -> bool:
         return pos not in self._pieces
 
+    def vacate(self, pos: Position) -> None:
+        """Removes whatever piece stands at `pos`, without relocating it anywhere.
+
+        Called the instant a move is scheduled (not when it lands): a piece
+        that has set off is no longer "there" for blocking/capture purposes,
+        even though it won't visually arrive at its destination until later.
+        """
+        del self._pieces[pos]
+
+    def _release(self, piece: Piece) -> None:
+        """Clears `piece`'s old cell, but only if it's still the one actually
+        registered there.
+
+        `piece.cell` isn't updated until it actually lands, so for a piece
+        that set off long ago it's a stale value - typically already cleared
+        by `vacate` at schedule time, but if left unguarded it could just as
+        easily now belong to some other piece that has since legitimately
+        moved in. The identity check is what makes this safe either way.
+        """
+        if self._pieces.get(piece.cell) is piece:
+            del self._pieces[piece.cell]
+
     def move_piece(self, piece: Piece, to: Position) -> Piece | None:
         """Places `piece` at `to`, capturing (and returning) any occupant.
 
@@ -35,14 +57,14 @@ class Board:
         onto a same-color piece before it's ever scheduled.
         """
         captured = self._pieces.pop(to, None)
-        del self._pieces[piece.cell]
+        self._release(piece)
         piece.cell = to
         self._pieces[to] = piece
         return captured
 
     def remove_piece(self, piece: Piece) -> None:
         """Removes `piece` from the board entirely (e.g. captured mid-air, never lands)."""
-        del self._pieces[piece.cell]
+        self._release(piece)
 
     def path_clear(self, frm: Position, to: Position) -> bool:
         dr = to.row - frm.row

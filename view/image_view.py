@@ -253,27 +253,15 @@ class ImageView(Renderer):
         if selection_targets is not None:
             self._draw_move_targets(frame, board, selection_targets)
 
-        moves_by_piece_id = {move.piece.id: move for move in in_flight_moves}
+        # A piece is in exactly one of these two sources at a time: its
+        # origin cell is vacated from `board` the instant a move is
+        # scheduled, so an in-flight mover is never yielded by iterating
+        # `board` - it only reappears there (at its destination) on arrival.
         for pos, piece in board:
-            move = moves_by_piece_id.get(piece.id)
-            if move is not None:
-                x, y = self._interpolated_pixel(move, now_ms, self.cell_size)
-                entry_time = move.start_time
-                # A move always sits between two rest-tracked states, and
-                # while it's in flight _entry_time() below is never called
-                # for this piece - so if it lands back in a same-named rest
-                # state (e.g. long_rest again), a stale cached timestamp
-                # from its *previous* time in that state would still match
-                # and get reused, making elapsed look huge from frame one.
-                # Dropping the cache on every in-flight frame guarantees the
-                # next non-in-flight sighting is always treated as fresh.
-                self._state_entry.pop(piece.id, None)
-            else:
-                x, y = cell_to_pixel(pos, self.cell_size)
-                entry_time = self._entry_time(piece, now_ms)
+            x, y = cell_to_pixel(pos, self.cell_size)
             x += LEFT_PANEL_WIDTH
             y += TOP_MARGIN
-
+            entry_time = self._entry_time(piece, now_ms)
             elapsed = max(0, now_ms - entry_time)
 
             config = PIECE_CONFIG.get(piece.kind, piece.color, piece.state)
@@ -287,6 +275,26 @@ class ImageView(Renderer):
             # it as a semi-transparent overlay on top instead tints the piece
             # itself, so the cooldown draining is actually visible.
             self._draw_rest_fill(frame, pos, piece.state, elapsed)
+
+        for move in in_flight_moves:
+            piece = move.piece
+            x, y = self._interpolated_pixel(move, now_ms, self.cell_size)
+            x += LEFT_PANEL_WIDTH
+            y += TOP_MARGIN
+            # A move always sits between two rest-tracked states, so
+            # _entry_time() above is never called for this piece while it's
+            # in flight - if it lands back in a same-named rest state (e.g.
+            # long_rest again), a stale cached timestamp from its *previous*
+            # time in that state would still match and get reused, making
+            # elapsed look huge from frame one. Dropping the cache on every
+            # in-flight frame guarantees the next sighting is always fresh.
+            self._state_entry.pop(piece.id, None)
+            elapsed = max(0, now_ms - move.start_time)
+
+            config = PIECE_CONFIG.get(piece.kind, piece.color, piece.state)
+            frame_idx = self._frame_index(config, elapsed)
+            sprite = self.sprites.sprite(piece.kind, piece.color, piece.state, frame_idx)
+            sprite.draw_on(frame, x, y)
 
         if selection is not None:
             self._draw_selection(frame, selection)

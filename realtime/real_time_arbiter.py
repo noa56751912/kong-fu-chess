@@ -108,14 +108,21 @@ class RealTimeArbiter:
         """Return whether a square is currently occupied by an in-progress move or jump."""
         return pos in self.status
 
-    def schedule_move(self, piece: Piece, frm: Position, to: Position, now_ms: int) -> PendingMove:
-        """Queue a timed move from frm to to, marking the origin square as moving."""
+    def schedule_move(self, board: Board, piece: Piece, frm: Position, to: Position, now_ms: int) -> PendingMove:
+        """Queue a timed move from frm to to, marking the origin square as moving.
+
+        The origin is vacated immediately (not on arrival): once a piece has
+        set off, its old square is open to everyone else, and nothing can
+        capture it there anymore - only a live occupant of the destination
+        can still be captured, resolved fresh when this move actually lands.
+        """
         distance = max(abs(to.row - frm.row), abs(to.col - frm.col))
         duration = move_duration_ms(piece.kind, piece.color, distance)
         move = PendingMove(piece, frm, to, now_ms, now_ms + duration)
         self.pending.append(move)
         self.status[frm] = Moving(move)
         piece.state = MOVE
+        board.vacate(frm)
         return move
 
     def schedule_jump(self, piece: Piece, pos: Position, now_ms: int) -> PendingJump:

@@ -1,5 +1,5 @@
 from boardio.board_parser import build_board
-from engine.game_engine import DESTINATION_RESERVED, GAME_OVER, GameEngine, MOTION_IN_PROGRESS
+from engine.game_engine import DESTINATION_RESERVED, GAME_OVER, GameEngine
 from model.position import Position
 from rules.rule_engine import OK, MoveValidation
 
@@ -23,12 +23,16 @@ class TestMoveResult:
         assert result.is_accepted is False
         assert result.reason == MoveValidation.INVALID_SHAPE
 
-    def test_busy_piece_is_rejected_with_motion_in_progress(self):
+    def test_translating_piece_vacates_its_square_so_a_second_command_there_finds_nothing(self):
+        # A piece's origin is vacated the instant its move is scheduled, so a
+        # second command targeting that same square finds no piece at all -
+        # MOTION_IN_PROGRESS is still used, but only for a piece that's busy
+        # while still physically there (mid-jump or resting; see test_jump.py).
         engine = make_engine(["wR . . .", ". . . .", ". . . ."])
         engine._try_schedule_move(Position(0, 0), Position(0, 3))   # now moving
         result = engine._try_schedule_move(Position(0, 0), Position(1, 0))
         assert result.is_accepted is False
-        assert result.reason == MOTION_IN_PROGRESS
+        assert result.reason == MoveValidation.NO_PIECE
 
     def test_move_after_game_over_is_rejected_with_game_over_reason(self):
         engine = make_engine(["wR bK wQ", ". . .", ". . ."])

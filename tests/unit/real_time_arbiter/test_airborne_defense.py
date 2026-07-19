@@ -19,7 +19,7 @@ class TestAirborneDefense:
         board, state, arbiter = make(3, 3)
         mover = board.spawn_piece(WHITE, ROOK, Position(0, 0))
         target = board.spawn_piece(BLACK, KNIGHT, Position(0, 2))
-        arbiter.schedule_move(mover, Position(0, 0), Position(0, 2), state.clock_ms)
+        arbiter.schedule_move(board, mover, Position(0, 0), Position(0, 2), state.clock_ms)
         return board, state, arbiter, mover, target
 
     def test_airborne_piece_captures_arriving_enemy(self):
@@ -56,7 +56,7 @@ class TestAirborneDefense:
         board, state, arbiter = make(3, 3)
         knight = board.spawn_piece(WHITE, KNIGHT, Position(0, 0))
         king = board.spawn_piece(BLACK, KING, Position(0, 1))
-        arbiter.schedule_move(king, Position(0, 1), Position(0, 0), state.clock_ms)  # arrives t=1000
+        arbiter.schedule_move(board, king, Position(0, 1), Position(0, 0), state.clock_ms)  # arrives t=1000
         state.clock_ms = 500
         arbiter.settle(state)
         arbiter.schedule_jump(knight, Position(0, 0), state.clock_ms)  # knight airborne [500, 1500]
