@@ -21,6 +21,10 @@ REST_FILL_COLOR = (60, 200, 255)  # BGR, amber
 REST_FILL_ALPHA = 0.55
 TARGET_COLOR = (80, 200, 80)  # BGR, green
 TARGET_ALPHA = 0.40
+TARGET_DOT_RADIUS_RATIO = 0.18  # fraction of cell_size
+CAPTURE_COLOR = (60, 60, 100)  # BGR, red
+CAPTURE_RING_RADIUS_RATIO = 0.40  # fraction of cell_size
+CAPTURE_RING_THICKNESS = 3
 
 # Extra UI chrome around the board proper: a score strip above (black, who
 # starts at the top of the board) and below (white), plus a move-log column
@@ -35,12 +39,6 @@ RIGHT_PANEL_WIDTH = 220
 PANEL_BG = (40, 40, 40)  # BGR
 TEXT_COLOR = (255, 255, 255, 255)  # BGRA
 MAX_LOG_LINES = 24
-
-# States whose sprite frames actually animate. Idle holds its first frame
-# (it sits still); move and jump cycle through their frames as the piece
-# travels, so the game reads as animated rather than sliding/hopping a
-# frozen sprite around the board.
-ANIMATED_STATES = set(REST_DURATIONS) | {JUMP, MOVE}
 
 WINDOW_NAME = "Image"  # matches Img.show()'s hardcoded title
 
@@ -101,9 +99,7 @@ class ImageView(Renderer):
         return round(fx + (tx - fx) * t), round(fy + (ty - fy) * t)
 
     @staticmethod
-    def _frame_index(config: StateConfig, state: str, elapsed_ms: int) -> int:
-        if state not in ANIMATED_STATES:
-            return 0
+    def _frame_index(config: StateConfig, elapsed_ms: int) -> int:
         count = len(config.frame_paths)
         idx = int(elapsed_ms / 1000 * config.frames_per_sec)
         return idx % count if config.is_loop else min(idx, count - 1)
@@ -115,20 +111,31 @@ class ImageView(Renderer):
         cv2.rectangle(frame.img, (x, y), (x + self.cell_size - 1, y + self.cell_size - 1),
                        SELECTION_COLOR, 3)
 
+    def _cell_center(self, pos: Position) -> tuple[int, int]:
+        x, y = cell_to_pixel(pos, self.cell_size)
+        return x + LEFT_PANEL_WIDTH + self.cell_size // 2, y + TOP_MARGIN + self.cell_size // 2
+
     def _draw_move_targets(self, frame: Img, board: Board, targets: Iterable[Position]) -> None:
+        targets = list(targets)
+        radius = max(1, round(self.cell_size * TARGET_DOT_RADIUS_RATIO))
         overlay = frame.img.copy()
-        any_drawn = False
+        any_empty = False
+        for pos in targets:
+            if board.is_empty(pos):
+                cv2.circle(overlay, self._cell_center(pos), radius, TARGET_COLOR, -1)
+                any_empty = True
+        if any_empty:
+            cv2.addWeighted(overlay, TARGET_ALPHA, frame.img, 1 - TARGET_ALPHA, 0, frame.img)
+
+        # Enemy pieces on reachable squares: drawn as a ring straight onto
+        # the now-blended frame (not into the overlay above), so the ring
+        # stays crisp instead of getting dimmed by TARGET_ALPHA like the
+        # "reachable empty square" dots.
+        capture_radius = max(1, round(self.cell_size * CAPTURE_RING_RADIUS_RATIO))
         for pos in targets:
             if not board.is_empty(pos):
-                continue  # occupied squares (captures) aren't highlighted as reachable
-            x, y = cell_to_pixel(pos, self.cell_size)
-            x += LEFT_PANEL_WIDTH
-            y += TOP_MARGIN
-            cv2.rectangle(overlay, (x, y), (x + self.cell_size - 1, y + self.cell_size - 1),
-                          TARGET_COLOR, -1)
-            any_drawn = True
-        if any_drawn:
-            cv2.addWeighted(overlay, TARGET_ALPHA, frame.img, 1 - TARGET_ALPHA, 0, frame.img)
+                cv2.circle(frame.img, self._cell_center(pos), capture_radius, CAPTURE_COLOR,
+                           CAPTURE_RING_THICKNESS)
 
     def _draw_rest_fill(self, frame: Img, pos: Position, state: str, elapsed_ms: int) -> None:
         duration = REST_DURATIONS.get(state)
@@ -270,7 +277,7 @@ class ImageView(Renderer):
             elapsed = max(0, now_ms - entry_time)
 
             config = PIECE_CONFIG.get(piece.kind, piece.color, piece.state)
-            frame_idx = self._frame_index(config, piece.state, elapsed)
+            frame_idx = self._frame_index(config, elapsed)
             sprite = self.sprites.sprite(piece.kind, piece.color, piece.state, frame_idx)
             sprite.draw_on(frame, x, y)
 
