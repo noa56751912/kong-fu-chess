@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from bus.event_bus import EventBus
 from model.board import Board
 from model.game_state import GameState
 from model.move_record import MoveRecord
@@ -12,6 +13,7 @@ from rules.rule_engine import OK, RuleEngine
 GAME_OVER = "game_over"
 MOTION_IN_PROGRESS = "motion_in_progress"
 DESTINATION_RESERVED = "destination_reserved"
+NOT_YOUR_PIECE = "not_your_piece"
 
 
 @dataclass(frozen=True)
@@ -24,13 +26,15 @@ class GameEngine:
     """The sole entry point: every request into the game flows through here."""
 
     def __init__(self, board: Board, rule_engine: Optional[RuleEngine] = None,
-                 arbiter: Optional[RealTimeArbiter] = None, win_conditions=None):
+                 arbiter: Optional[RealTimeArbiter] = None, win_conditions=None,
+                 bus: Optional[EventBus] = None):
         if win_conditions is None:
             self.state = GameState(board)
         else:
             self.state = GameState(board, win_conditions=list(win_conditions))
         self.rule_engine = rule_engine or RuleEngine()
-        self.arbiter = arbiter or RealTimeArbiter()
+        self.bus = bus if bus is not None else EventBus()
+        self.arbiter = arbiter or RealTimeArbiter(bus=self.bus)
 
     @property
     def game_over(self) -> bool:
@@ -45,13 +49,33 @@ class GameEngine:
             return
         self._handle_selection(pos)
 
-    def jump(self, pos: Optional[Position]) -> None:
+    def jump(self, pos: Optional[Position], requesting_color: Optional[str] = None) -> None:
         if self.state.game_over or pos is None:
             return
         piece = self.state.board.piece_at(pos)
         if piece is None or not piece.is_selectable:
             return
+        if requesting_color is not None and piece.color != requesting_color:
+            return
         self.arbiter.schedule_jump(piece, pos, self.state.clock_ms)
+
+    def move(self, frm: Position, to: Position, requesting_color: Optional[str] = None) -> MoveResult:
+        """Schedule a complete from->to move in one call, as a network client sends it.
+
+        Unlike select()'s two-click local UX, this takes both endpoints at once. When
+        requesting_color is given, this is also the one place that enforces server-side
+        piece ownership: a networked client can only ever *request* a move, never write
+        GameState directly, so refusing to move a piece that isn't requesting_color's is
+        enough to stop a client from moving its opponent's pieces - no separate check
+        needed anywhere else.
+        """
+        if self.state.game_over:
+            return MoveResult(False, GAME_OVER)
+        if requesting_color is not None:
+            piece = self.state.board.piece_at(frm)
+            if piece is None or piece.color != requesting_color:
+                return MoveResult(False, NOT_YOUR_PIECE)
+        return self._try_schedule_move(frm, to)
 
     def wait(self, ms: int) -> None:
         self.state.clock_ms += ms

@@ -1,3 +1,6 @@
+from typing import Optional
+
+from bus.event_bus import EventBus
 from model.board import Board
 from model.game_state import GameState
 from model.piece import Piece, POINT_VALUES
@@ -20,13 +23,19 @@ def _run_on_arrive(piece: Piece, board: Board) -> None:
 
 def _apply_capture(captured: Piece, capturer_color: str, game_state: GameState, arbiter: "RealTimeArbiter") -> None:
     """Single funnel for every capture: scores it, then checks the win conditions."""
+    arbiter.bus.publish('piece.captured', {
+        'piece_id': captured.id, 'capturer_color': capturer_color,
+        'pos': captured.cell, 'clock_ms': game_state.clock_ms,
+    })
     game_state.score[capturer_color] += POINT_VALUES[captured.kind]
+    arbiter.bus.publish('score.changed', {'color': capturer_color, 'score': game_state.score[capturer_color]})
     if any(cond(captured) for cond in game_state.win_conditions):
         game_state.game_over = True
         game_state.winner = capturer_color
         arbiter.pending.clear()
         arbiter.rests.clear()
         arbiter.status.clear()
+        arbiter.bus.publish('game.over', {'winner': capturer_color})
 
 
 def _advance_state(arbiter: "RealTimeArbiter", game_state: GameState, piece: Piece, finished_state: str) -> None:
@@ -35,6 +44,11 @@ def _advance_state(arbiter: "RealTimeArbiter", game_state: GameState, piece: Pie
     expiry; if it's idle, the piece just waits for player input."""
     next_state = PIECE_CONFIG.get(piece.kind, piece.color, finished_state).next_state
     piece.state = next_state
+    # A single generic event regardless of which transition caused it (move
+    # finishing, jump finishing, or a rest expiring) - a network client just
+    # needs to know "this piece is now in state X" to keep its local mirror's
+    # sprite/cooldown-bar rendering in sync, not why.
+    arbiter.bus.publish('piece.state_changed', {'piece_id': piece.id, 'state': next_state})
     if next_state == IDLE:
         return
     end_time = game_state.clock_ms + rest_duration_ms(next_state)
@@ -69,6 +83,10 @@ def _resolve_move_arrival(arbiter: "RealTimeArbiter", game_state: GameState, eve
     if captured is not None:
         captured.captured = True
     _run_on_arrive(move.piece, board)   # promotion runs after the captured snapshot is taken
+    arbiter.bus.publish('move.arrived', {
+        'piece_id': move.piece.id, 'to': move.to,
+        'captured_piece_id': captured.id if captured is not None else None,
+    })
     if captured is not None:
         _apply_capture(captured, move.piece.color, game_state, arbiter)
     return True
@@ -79,6 +97,7 @@ def _resolve_jump_landing(arbiter: "RealTimeArbiter", game_state: GameState, eve
     jump: PendingJump = event.activity
     arbiter.status.pop(jump.pos, None)
     _advance_state(arbiter, game_state, jump.piece, JUMP)
+    arbiter.bus.publish('jump.landed', {'piece_id': jump.piece.id})
     return True
 
 
@@ -99,10 +118,11 @@ RESOLVERS = {
 
 class RealTimeArbiter:
 
-    def __init__(self):
+    def __init__(self, bus: Optional[EventBus] = None):
         self.pending: list[PendingMove] = []
         self.rests: list[PendingRest] = []
         self.status: dict[Position, object] = {}
+        self.bus = bus if bus is not None else EventBus()
 
     def is_busy(self, pos: Position) -> bool:
         """Return whether a square is currently occupied by an in-progress move or jump."""
@@ -123,6 +143,10 @@ class RealTimeArbiter:
         self.status[frm] = Moving(move)
         piece.state = MOVE
         board.vacate(frm)
+        self.bus.publish('move.started', {
+            'piece_id': piece.id, 'color': piece.color, 'kind': piece.kind,
+            'from': frm, 'to': to, 'start_time': now_ms, 'arrive_time': move.arrive_time,
+        })
         return move
 
     def schedule_jump(self, piece: Piece, pos: Position, now_ms: int) -> PendingJump:
@@ -131,6 +155,9 @@ class RealTimeArbiter:
         jump = PendingJump(piece, pos, now_ms + duration)
         self.status[pos] = Jumping(jump)
         piece.state = JUMP
+        self.bus.publish('jump.started', {
+            'piece_id': piece.id, 'pos': pos, 'end_time': jump.end_time,
+        })
         return jump
 
     def settle(self, game_state: GameState) -> None:

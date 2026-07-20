@@ -3,6 +3,12 @@ from typing import Iterable, Optional
 import cv2
 import numpy as np
 
+try:
+    import winsound  # stdlib, Windows-only
+except ImportError:  # pragma: no cover - non-Windows dev/CI environments
+    winsound = None
+
+from bus.event_bus import EventBus
 from input.board_mapper import CELL_SIZE, cell_to_pixel
 from model.board import Board
 from model.move_record import MoveRecord
@@ -25,6 +31,13 @@ TARGET_DOT_RADIUS_RATIO = 0.18  # fraction of cell_size
 CAPTURE_COLOR = (60, 60, 100)  # BGR, red
 CAPTURE_RING_RADIUS_RATIO = 0.40  # fraction of cell_size
 CAPTURE_RING_THICKNESS = 3
+
+# One-shot flash on the captured square, triggered by the 'piece.captured' bus
+# event rather than polled state - it fades out over CAPTURE_FLASH_MS of game
+# clock time.
+CAPTURE_FLASH_MS = 500
+CAPTURE_FLASH_COLOR = (0, 0, 255)  # BGR, red
+CAPTURE_FLASH_ALPHA = 0.5
 
 # Extra UI chrome around the board proper: a score strip above (black, who
 # starts at the top of the board) and below (white), plus a move-log column
@@ -57,6 +70,25 @@ class ImageView(Renderer):
         # (scale, x_offset, y_offset) mapping board pixel space to the last
         # displayed window frame; identity until a window_size resize happens.
         self._display_transform: tuple[float, int, int] = (1.0, 0, 0)
+        # Position -> clock_ms the capture happened, from the 'piece.captured'
+        # bus event; drained in render() once CAPTURE_FLASH_MS has elapsed.
+        self._capture_flashes: dict[Position, int] = {}
+
+    def subscribe_to(self, bus: EventBus) -> None:
+        """Attach as a listener for one-shot effects the bus publishes (a capture
+        flash/beep, a game-over chime) on top of the per-frame poll rendering
+        everything else still uses."""
+        bus.subscribe('piece.captured', self._on_piece_captured)
+        bus.subscribe('game.over', self._on_game_over)
+
+    def _on_piece_captured(self, payload: dict) -> None:
+        self._capture_flashes[payload['pos']] = payload['clock_ms']
+        if winsound is not None:
+            winsound.MessageBeep(winsound.MB_OK)
+
+    def _on_game_over(self, payload: dict) -> None:
+        if winsound is not None:
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
 
     def _build_background(self, rows: int, cols: int) -> Img:
         # BGRA (not BGR): Img.draw_on() only alpha-blends a sprite when the
@@ -221,6 +253,25 @@ class ImageView(Renderer):
         self._draw_move_column(frame, 8, "White", white_moves, rows)
         self._draw_move_column(frame, LEFT_PANEL_WIDTH + board_w + 8, "Black", black_moves, rows)
 
+    def _draw_capture_flashes(self, frame: Img, now_ms: int) -> None:
+        expired = []
+        for pos, start_ms in self._capture_flashes.items():
+            elapsed = now_ms - start_ms
+            if elapsed >= CAPTURE_FLASH_MS:
+                expired.append(pos)
+                continue
+            fraction = 1.0 - elapsed / CAPTURE_FLASH_MS
+            x, y = cell_to_pixel(pos, self.cell_size)
+            x += LEFT_PANEL_WIDTH
+            y += TOP_MARGIN
+            overlay = frame.img.copy()
+            cv2.rectangle(overlay, (x, y), (x + self.cell_size - 1, y + self.cell_size - 1),
+                           CAPTURE_FLASH_COLOR, -1)
+            alpha = CAPTURE_FLASH_ALPHA * fraction
+            cv2.addWeighted(overlay, alpha, frame.img, 1 - alpha, 0, frame.img)
+        for pos in expired:
+            del self._capture_flashes[pos]
+
     def _draw_game_over(self, frame: Img, winner: Optional[str], score: dict[str, int]) -> None:
         h, w = frame.img.shape[:2]
         overlay = frame.img.copy()
@@ -295,6 +346,8 @@ class ImageView(Renderer):
             frame_idx = self._frame_index(config, elapsed)
             sprite = self.sprites.sprite(piece.kind, piece.color, piece.state, frame_idx)
             sprite.draw_on(frame, x, y)
+
+        self._draw_capture_flashes(frame, now_ms)
 
         if selection is not None:
             self._draw_selection(frame, selection)

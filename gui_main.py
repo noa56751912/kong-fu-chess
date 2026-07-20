@@ -47,6 +47,7 @@ def _new_game() -> tuple[GameEngine, Controller]:
 def main() -> None:
     engine, controller = _new_game()
     view = ImageView()
+    view.subscribe_to(engine.bus)
     controller_holder = [controller]
 
     board = engine.state.board
@@ -77,6 +78,7 @@ def main() -> None:
         if key == RESTART_KEY and engine.game_over:
             engine, controller = _new_game()
             controller_holder[0] = controller
+            view.subscribe_to(engine.bus)
         if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
             break
 
