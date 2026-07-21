@@ -36,6 +36,10 @@ class NetworkGameClient:
         self.pending_moves: list[PendingMove] = []
         self.pending_jumps: list[PendingJump] = []
         self.last_error: Optional[dict] = None
+        # Bumped on every SYNC_STATE, so a caller tracking its own wall-clock-
+        # derived render clock (client_main.py) can tell "a fresh clock_ms
+        # just arrived, re-anchor to it" apart from "nothing changed".
+        self.sync_version: int = 0
         self._pieces_by_id: dict[int, object] = {}
         self._connection = None
 
@@ -88,12 +92,13 @@ class NetworkGameClient:
                        square_to_position(m["to"], rows), m["time_ms"])
             for m in message["moves"]
         ]
-        # Any in-flight motion is implicit in `grid` (an in-flight piece's
+        # Any in-flight motion is implicit in the board (an in-flight piece's
         # origin is already vacated there, same as server-side) - the moves/
         # jumps themselves aren't replayed, so there's nothing to interpolate
         # until the next move.started/jump.started event arrives.
         self.pending_moves.clear()
         self.pending_jumps.clear()
+        self.sync_version += 1
 
     def _apply_event(self, topic: str, payload: dict) -> None:
         rows = self.board.rows
