@@ -6,8 +6,9 @@ from model.board import Board
 from model.move_record import MoveRecord
 from model.position import Position
 from net.protocol import (
-    ERROR, EVENT, GAME_OVER, JUMP, LOGIN, LOGIN_OK, MOVE, SYNC_STATE, decode,
-    deserialize_board, encode, position_to_square, square_to_position,
+    CANCEL_SEARCH, ERROR, EVENT, GAME_OVER, JUMP, LOGIN, LOGIN_OK, MATCH_FOUND,
+    MOVE, NO_MATCH_FOUND, PLAY, SYNC_STATE, decode, deserialize_board, encode,
+    position_to_square, square_to_position,
 )
 from realtime.motion import PendingJump, PendingMove
 from rules.piece_config import JUMP as JUMP_STATE, MOVE as MOVE_STATE
@@ -38,6 +39,9 @@ class NetworkGameClient:
         self.last_error: Optional[dict] = None
         self.username: Optional[str] = None
         self.rating: Optional[int] = None
+        self.room_id: Optional[str] = None
+        self.searching: bool = False
+        self.no_match_found: bool = False
         # Bumped on every SYNC_STATE, so a caller tracking its own wall-clock-
         # derived render clock (client_main.py) can tell "a fresh clock_ms
         # just arrived, re-anchor to it" apart from "nothing changed".
@@ -66,6 +70,15 @@ class NetworkGameClient:
         if self._connection is not None:
             await self._connection.close()
 
+    async def send_play(self) -> None:
+        self.no_match_found = False
+        self.searching = True
+        await self._connection.send(encode({"type": PLAY}))
+
+    async def send_cancel_search(self) -> None:
+        self.searching = False
+        await self._connection.send(encode({"type": CANCEL_SEARCH}))
+
     async def send_move(self, frm: Position, to: Position) -> None:
         rows = self.board.rows
         await self._connection.send(encode({
@@ -91,6 +104,14 @@ class NetworkGameClient:
         elif msg_type == GAME_OVER:
             self.game_over = True
             self.winner = message.get("winner")
+        elif msg_type == MATCH_FOUND:
+            self.searching = False
+            self.room_id = message.get("room_id")
+            # color/board arrive moments later on the SYNC_STATE that always
+            # follows a MATCH_FOUND - nothing further to do with this one.
+        elif msg_type == NO_MATCH_FOUND:
+            self.searching = False
+            self.no_match_found = True
         elif msg_type == ERROR:
             self.last_error = message
 

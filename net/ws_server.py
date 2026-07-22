@@ -1,18 +1,21 @@
 import argparse
 import asyncio
 import logging
+import secrets
 import sqlite3
 from typing import Optional
 
 import websockets
 
+from matchmaking.queue import MatchmakingQueue, Waiting
+from model.piece import BLACK, WHITE
 from net.game_session import GameSession
 from net.protocol import (
-    ERROR, JUMP, LOGIN, LOGIN_FAIL, LOGIN_OK, MOVE, ProtocolError, decode, encode,
-    square_to_position,
+    CANCEL_SEARCH, ERROR, JUMP, LOGIN, LOGIN_FAIL, LOGIN_OK, MATCH_FOUND, MOVE,
+    NO_MATCH_FOUND, PLAY, ProtocolError, decode, encode, square_to_position,
 )
 from persistence.db import connect as connect_db
-from persistence.user_repo import UserRepo
+from persistence.user_repo import DEFAULT_RATING, UserRepo
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,32 @@ STARTING_POSITION = [
     "wP wP wP wP wP wP wP wP".split(),
     "wR wN wB wQ wK wB wN wR".split(),
 ]
+
+# How often the matchmaking loop checks for pairings/timeouts. A plain
+# await asyncio.sleep() between passes - not a blocking wait - so it costs
+# nothing else running on the server.
+MATCHMAKING_INTERVAL_S = 1
+
+
+class ConnectionContext:
+    """Per-connection state that outlives any single incoming message: which
+    username this connection logged in as, and - once matched or joined into
+    a room - which GameSession and color it belongs to. A connection with
+    session=None is still in the lobby (only PLAY/CANCEL_SEARCH/room commands
+    are valid); once session is set, MOVE/JUMP are dispatched to it."""
+
+    def __init__(self, connection, username: str):
+        self.connection = connection
+        self.username = username
+        self.session: Optional[GameSession] = None
+        self.color: Optional[str] = None
+
+
+class ServerState:
+    def __init__(self, user_repo: UserRepo):
+        self.user_repo = user_repo
+        self.queue = MatchmakingQueue()
+        self.sessions: dict[str, GameSession] = {}
 
 
 async def _send_error(connection, code: str, message: str = "") -> None:
@@ -84,9 +113,21 @@ async def _await_login(connection, user_repo: UserRepo) -> Optional[str]:
     return username
 
 
-async def _dispatch(message: dict, color: str, session: GameSession, connection) -> None:
+async def _dispatch_lobby(msg_type: Optional[str], context: ConnectionContext, server_state: ServerState) -> None:
+    if msg_type == PLAY:
+        user = await asyncio.to_thread(server_state.user_repo.get_user, context.username)
+        rating = user.elo_rating if user is not None else DEFAULT_RATING
+        server_state.queue.add(context, rating)
+    elif msg_type == CANCEL_SEARCH:
+        server_state.queue.remove_connection(context.connection)
+    else:
+        await _send_error(context.connection, "UNKNOWN_MESSAGE_TYPE", str(msg_type))
+
+
+async def _dispatch_in_game(message: dict, msg_type: Optional[str], context: ConnectionContext) -> None:
+    session = context.session
     rows = session.engine.state.board.rows
-    msg_type = message.get("type")
+    connection = context.connection
 
     if msg_type == MOVE:
         try:
@@ -98,7 +139,7 @@ async def _dispatch(message: dict, color: str, session: GameSession, connection)
         # The server never trusts a client-declared color or piece - it
         # always resolves whose piece frm actually holds and checks that
         # against the connection's own assigned color.
-        result = session.engine.move(frm, to, requesting_color=color)
+        result = session.engine.move(frm, to, requesting_color=context.color)
         if not result.is_accepted:
             await _send_error(connection, result.reason.upper())
 
@@ -108,27 +149,19 @@ async def _dispatch(message: dict, color: str, session: GameSession, connection)
         except (KeyError, ProtocolError) as exc:
             await _send_error(connection, "BAD_MESSAGE", str(exc))
             return
-        session.engine.jump(pos, requesting_color=color)
+        session.engine.jump(pos, requesting_color=context.color)
 
     else:
         await _send_error(connection, "UNKNOWN_MESSAGE_TYPE", str(msg_type))
 
 
-async def handle_connection(connection, session: GameSession, user_repo: UserRepo) -> None:
-    username = await _await_login(connection, user_repo)
+async def handle_connection(connection, server_state: ServerState) -> None:
+    username = await _await_login(connection, server_state.user_repo)
     if username is None:
         return
 
-    color = session.assign_color()
-    if color is None:
-        await _send_error(connection, "SESSION_FULL", "the game already has two players")
-        await connection.close()
-        return
-
-    session.add_player(color, connection, username)
-    await session.send_sync_state(connection, color)
-    session.start_tick_loop()
-    logger.info("%s connected as %s", username, color)
+    context = ConnectionContext(connection, username)
+    logger.info("%s connected, entering lobby", username)
 
     try:
         async for raw in connection:
@@ -137,21 +170,74 @@ async def handle_connection(connection, session: GameSession, user_repo: UserRep
             except ProtocolError as exc:
                 await _send_error(connection, "BAD_MESSAGE", str(exc))
                 continue
-            await _dispatch(message, color, session, connection)
+            msg_type = message.get("type")
+            if context.session is None:
+                await _dispatch_lobby(msg_type, context, server_state)
+            else:
+                await _dispatch_in_game(message, msg_type, context)
     finally:
-        logger.info("%s (%s) disconnected", username, color)
+        server_state.queue.remove_connection(connection)
+        logger.info("%s disconnected", username)
+
+
+async def _start_matched_game(pair: tuple[Waiting, Waiting], server_state: ServerState) -> None:
+    waiting_a, waiting_b = pair
+    session = GameSession(STARTING_POSITION, server_state.user_repo)
+    match_id = secrets.token_hex(3)
+    server_state.sessions[match_id] = session
+
+    for color, waiting in ((WHITE, waiting_a), (BLACK, waiting_b)):
+        waiting.context.session = session
+        waiting.context.color = color
+        session.add_player(color, waiting.context.connection, waiting.context.username)
+    session.start_tick_loop()
+
+    for color, waiting in ((WHITE, waiting_a), (BLACK, waiting_b)):
+        try:
+            await waiting.context.connection.send(encode({
+                "type": MATCH_FOUND, "room_id": match_id, "color": color,
+            }))
+            await session.send_sync_state(waiting.context.connection, color)
+        except Exception:
+            # The other player, if still connected, will see this one
+            # time out via Phase D's disconnect handling once it's wired up.
+            logger.exception("failed to notify a matched player")
+    logger.info("matched %s (w) vs %s (b) as %s", waiting_a.context.username, waiting_b.context.username, match_id)
+
+
+async def _expire_waiting(server_state: ServerState) -> None:
+    for waiting in server_state.queue.expire():
+        try:
+            await waiting.context.connection.send(encode({"type": NO_MATCH_FOUND}))
+        except Exception:
+            logger.exception("failed to notify a timed-out matchmaking search")
+
+
+async def _matchmaking_loop(server_state: ServerState) -> None:
+    while True:
+        await asyncio.sleep(MATCHMAKING_INTERVAL_S)
+        while True:
+            pair = server_state.queue.find_match()
+            if pair is None:
+                break
+            await _start_matched_game(pair, server_state)
+        await _expire_waiting(server_state)
 
 
 async def serve(host: str = "0.0.0.0", port: int = 8765, db_path: Optional[str] = None) -> None:
     user_repo = UserRepo(await asyncio.to_thread(connect_db, db_path))
-    session = GameSession(STARTING_POSITION, user_repo)
+    server_state = ServerState(user_repo)
 
     async def handler(connection):
-        await handle_connection(connection, session, user_repo)
+        await handle_connection(connection, server_state)
 
-    async with websockets.serve(handler, host, port):
-        logger.info("server listening on %s:%d", host, port)
-        await asyncio.Future()  # run forever
+    matchmaking_task = asyncio.create_task(_matchmaking_loop(server_state))
+    try:
+        async with websockets.serve(handler, host, port):
+            logger.info("server listening on %s:%d", host, port)
+            await asyncio.Future()  # run forever
+    finally:
+        matchmaking_task.cancel()
 
 
 def main() -> None:

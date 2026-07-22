@@ -7,6 +7,7 @@ from typing import Optional
 import cv2
 
 from auth.login_cli import Credentials, prompt_credentials
+from client.home_screen import run_home_screen
 from input.board_mapper import pixel_to_cell
 from model.position import Position
 from net.ws_client import NetworkGameClient
@@ -140,11 +141,11 @@ def main() -> None:
 
     print(f"Logged in as {client.username} (rating {client.rating})")
 
-    deadline = time.perf_counter() + 10
-    while client.board is None and time.perf_counter() < deadline and thread.is_alive():
-        time.sleep(0.05)
+    if not run_home_screen(client, loop):
+        asyncio.run_coroutine_threadsafe(client.close(), loop)
+        return
     if client.board is None:
-        print("Did not receive initial game state after logging in.")
+        print("Matched, but did not receive the initial game state.")
         return
 
     view = ImageView()
