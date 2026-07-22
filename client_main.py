@@ -177,11 +177,15 @@ def main() -> None:
 
         _, _, win_w, win_h = cv2.getWindowImageRect(WINDOW_NAME)
         window_size = (win_w, win_h) if win_w > 0 and win_h > 0 else None
+        disconnect_notice = None
+        if client.opponent_disconnect_username is not None:
+            disconnect_notice = (client.opponent_disconnect_username, client.opponent_disconnect_countdown_s)
         # selection_targets is deliberately omitted (None): the server is the
         # sole authority on legal destinations, and duplicating RuleEngine
         # client-side just to highlight them isn't worth it for this phase.
         view.render(client.board, local_clock_ms, client.pending_moves, selection.pos,
-                    window_size, client.score, client.moves, client.game_over, client.winner, None)
+                    window_size, client.score, client.moves, client.game_over, client.winner, None,
+                    disconnect_notice)
 
         key = cv2.waitKey(1) & 0xFF
         if key in QUIT_KEYS:

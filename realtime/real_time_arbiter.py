@@ -35,7 +35,7 @@ def _apply_capture(captured: Piece, capturer_color: str, game_state: GameState, 
         arbiter.pending.clear()
         arbiter.rests.clear()
         arbiter.status.clear()
-        arbiter.bus.publish('game.over', {'winner': capturer_color})
+        arbiter.bus.publish('game.over', {'winner': capturer_color, 'reason': 'capture'})
 
 
 def _advance_state(arbiter: "RealTimeArbiter", game_state: GameState, piece: Piece, finished_state: str) -> None:

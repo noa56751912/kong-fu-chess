@@ -55,6 +55,13 @@ class ServerState:
         self.user_repo = user_repo
         self.queue = MatchmakingQueue()
         self.sessions: dict[str, GameSession] = {}
+        # username -> (session, color) for every player currently in an
+        # in-progress game, so a fresh LOGIN for that username can be
+        # recognized as a reconnect instead of a normal lobby entry. Left in
+        # place (not deleted) once a game ends - handle_connection checks
+        # session.engine.state.game_over at lookup time, so a stale entry is
+        # simply ignored rather than needing active cleanup.
+        self.active_players: dict[str, tuple[GameSession, str]] = {}
 
 
 async def _send_error(connection, code: str, message: str = "") -> None:
@@ -161,7 +168,16 @@ async def handle_connection(connection, server_state: ServerState) -> None:
         return
 
     context = ConnectionContext(connection, username)
-    logger.info("%s connected, entering lobby", username)
+
+    reconnect_info = server_state.active_players.get(username)
+    if reconnect_info is not None and not reconnect_info[0].engine.state.game_over:
+        session, color = reconnect_info
+        context.session = session
+        context.color = color
+        await session.on_reconnect(color, connection)
+        logger.info("%s reconnected as %s", username, color)
+    else:
+        logger.info("%s connected, entering lobby", username)
 
     try:
         async for raw in connection:
@@ -177,6 +193,8 @@ async def handle_connection(connection, server_state: ServerState) -> None:
                 await _dispatch_in_game(message, msg_type, context)
     finally:
         server_state.queue.remove_connection(connection)
+        if context.session is not None:
+            context.session.on_disconnect(context.color)
         logger.info("%s disconnected", username)
 
 
@@ -190,6 +208,7 @@ async def _start_matched_game(pair: tuple[Waiting, Waiting], server_state: Serve
         waiting.context.session = session
         waiting.context.color = color
         session.add_player(color, waiting.context.connection, waiting.context.username)
+        server_state.active_players[waiting.context.username] = (session, color)
     session.start_tick_loop()
 
     for color, waiting in ((WHITE, waiting_a), (BLACK, waiting_b)):

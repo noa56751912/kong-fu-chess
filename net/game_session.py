@@ -6,7 +6,10 @@ from boardio.board_parser import build_board
 from engine.game_engine import GameEngine
 from model.piece import BLACK, WHITE
 from net.bus_bridge import BusBridge
-from net.protocol import SYNC_STATE, encode, position_to_square, serialize_board
+from net.protocol import (
+    PLAYER_DISCONNECTED, PLAYER_RECONNECTED, SYNC_STATE, encode, position_to_square,
+    serialize_board,
+)
 from persistence.elo import compute_new_ratings
 from persistence.user_repo import UserRepo
 
@@ -15,6 +18,9 @@ logger = logging.getLogger(__name__)
 # 20 ticks/sec: fine enough granularity for settle() to resolve arrivals/jumps/
 # rests promptly without flooding the event loop with wakeups.
 TICK_MS = 50
+
+# How long a disconnected player has to reconnect before auto-resigning.
+DISCONNECT_GRACE_S = 20
 
 
 class GameSession:
@@ -34,6 +40,7 @@ class GameSession:
         self.usernames: dict[str, str] = {}         # color -> logged-in username
         self.bridge = BusBridge(self.engine.bus, self.engine.state.board.rows, self.broadcast_nowait)
         self._tick_task: Optional[asyncio.Task] = None
+        self._disconnect_timers: dict[str, asyncio.Task] = {}   # color -> pending auto-resign timer
         self._user_repo = user_repo
         if user_repo is not None:
             self.engine.bus.subscribe('game.over', self._on_game_over)
@@ -78,6 +85,72 @@ class GameSession:
         logger.info("ratings updated: %s %d->%d, %s %d->%d",
                     winner_username, winner.elo_rating, new_winner_rating,
                     loser_username, loser.elo_rating, new_loser_rating)
+
+    def _opponent_color(self, color: str) -> str:
+        return BLACK if color == WHITE else WHITE
+
+    def on_disconnect(self, color: str) -> None:
+        """Called once a connection's own message loop ends. Starts a grace-
+        period timer rather than resigning immediately - the player may just
+        be reloading a page, not gone for good - and does nothing at all if
+        the game already ended by the time this fires (e.g. the disconnect
+        is simply the player closing the client after a normal win/loss)."""
+        if self.engine.state.game_over or color in self._disconnect_timers:
+            return
+        self._disconnect_timers[color] = asyncio.create_task(self._run_disconnect_timer(color))
+
+    async def _run_disconnect_timer(self, color: str) -> None:
+        try:
+            for remaining in range(DISCONNECT_GRACE_S, 0, -1):
+                self._notify_disconnect_countdown(color, remaining)
+                await asyncio.sleep(1)
+            self._resign(color)
+        except asyncio.CancelledError:
+            pass   # reconnected in time - on_reconnect cancels this task
+        finally:
+            self._disconnect_timers.pop(color, None)
+
+    def _notify_disconnect_countdown(self, color: str, remaining: int) -> None:
+        opponent_connection = self.connections.get(self._opponent_color(color))
+        if opponent_connection is None:
+            return
+        message = encode({
+            "type": PLAYER_DISCONNECTED, "username": self.usernames.get(color), "countdown_s": remaining,
+        })
+        asyncio.create_task(self._safe_send(opponent_connection, message))
+
+    def _resign(self, color: str) -> None:
+        """The disconnected player's grace period expired: a technical loss,
+        same as any other game.over - it goes through the exact same bus
+        event (with a distinguishing reason) so the existing ELO-update
+        subscriber and the network broadcast to the opponent both just work,
+        without a second code path duplicating either."""
+        if self.engine.state.game_over:
+            return
+        winner_color = self._opponent_color(color)
+        self.engine.state.game_over = True
+        self.engine.state.winner = winner_color
+        self.engine.bus.publish('game.over', {'winner': winner_color, 'reason': 'opponent_disconnected'})
+
+    async def on_reconnect(self, color: str, new_connection) -> None:
+        """Called when the same username logs back in while still attached
+        to this in-progress session. Cancels the pending auto-resign timer,
+        rebinds the connection, and sends the second (and only other) full
+        SYNC_STATE this session ever emits - the reconnecting client has no
+        idea what it missed, so a full snapshot is the correct resync."""
+        timer = self._disconnect_timers.get(color)
+        if timer is not None:
+            timer.cancel()
+            self._notify_reconnected(color)
+        self.connections[color] = new_connection
+        await self.send_sync_state(new_connection, color)
+
+    def _notify_reconnected(self, color: str) -> None:
+        opponent_connection = self.connections.get(self._opponent_color(color))
+        if opponent_connection is None:
+            return
+        message = encode({"type": PLAYER_RECONNECTED, "username": self.usernames.get(color)})
+        asyncio.create_task(self._safe_send(opponent_connection, message))
 
     def broadcast_nowait(self, message: str) -> None:
         """Fire-and-forget send to every connected player - called from

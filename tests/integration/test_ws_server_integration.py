@@ -10,11 +10,13 @@ from unittest.mock import patch
 import pytest
 import websockets
 
+import net.game_session as game_session_module
 import net.ws_server as ws_server
 import matchmaking.queue as matchmaking_queue
 from net.protocol import (
     ERROR, EVENT, LOGIN, LOGIN_FAIL, LOGIN_OK, MATCH_FOUND, MOVE,
-    NO_MATCH_FOUND, PLAY, SYNC_STATE, decode, encode,
+    NO_MATCH_FOUND, PLAY, PLAYER_DISCONNECTED, PLAYER_RECONNECTED, SYNC_STATE,
+    decode, encode,
 )
 from net.ws_client import NetworkGameClient
 from net.ws_server import ServerState, handle_connection
@@ -202,6 +204,99 @@ class TestMatchmakingTimeoutOverRealSockets:
         with patch.object(matchmaking_queue, "TIMEOUT_S", 0.2), \
              patch.object(ws_server, "MATCHMAKING_INTERVAL_S", 0.1):
             asyncio.run(self._run())
+
+
+class TestDisconnectReconnectOverRealSockets:
+
+    async def _matched_pair(self, uri):
+        ws_a = await websockets.connect(uri)
+        ws_b = await websockets.connect(uri)
+        await _login_and_play(ws_a, "alice")
+        await _login_and_play(ws_b, "bob")
+        await _recv(ws_a)   # MATCH_FOUND
+        await _recv(ws_b)
+        await _recv(ws_a)   # SYNC_STATE
+        await _recv(ws_b)
+        return ws_a, ws_b
+
+    async def _run_reconnect(self):
+        server, port, server_state, matchmaking_task = await _start_test_server()
+        try:
+            uri = f"ws://localhost:{port}"
+            # Generous grace period: the reconnect sequence below includes a
+            # real PBKDF2 password verification, which can itself take a
+            # meaningful fraction of a second - this just needs to be well
+            # clear of that, not tightly timed against it.
+            with patch.object(game_session_module, 'DISCONNECT_GRACE_S', 10):
+                ws_a, ws_b = await self._matched_pair(uri)
+                await ws_a.close()   # alice disconnects
+
+                countdown = await _recv(ws_b)
+                assert countdown["type"] == PLAYER_DISCONNECTED
+                assert countdown["username"] == "alice"
+                assert countdown["countdown_s"] == 10
+
+                # alice reconnects with the same username, well within the
+                # grace period - the server must route this straight back
+                # into the same in-progress game, not the lobby.
+                ws_a2 = await websockets.connect(uri)
+                await _login(ws_a2, "alice")
+                resync = await _recv(ws_a2)
+                assert resync["type"] == SYNC_STATE
+                assert resync["color"] == "w"
+
+                # Zero or more further countdown ticks may have already been
+                # in flight before the reconnect cancelled the timer -
+                # PLAYER_RECONNECTED is still guaranteed to follow.
+                reconnected = await _recv(ws_b)
+                while reconnected["type"] == PLAYER_DISCONNECTED:
+                    reconnected = await _recv(ws_b)
+                assert reconnected["type"] == PLAYER_RECONNECTED
+                assert reconnected["username"] == "alice"
+
+                # The reconnected session is still live: a move works normally.
+                await ws_a2.send(encode({"type": MOVE, "from": "e2", "to": "e4"}))
+                move_event = await _recv(ws_a2)
+                assert move_event["type"] == EVENT
+                assert move_event["topic"] == "move.started"
+
+                await ws_a2.close()
+                await ws_b.close()
+        finally:
+            await _stop_test_server(server, server_state, matchmaking_task)
+
+    def test_reconnect_within_grace_period_resumes_the_same_game(self):
+        asyncio.run(self._run_reconnect())
+
+    async def _run_timeout(self):
+        server, port, server_state, matchmaking_task = await _start_test_server()
+        try:
+            uri = f"ws://localhost:{port}"
+            with patch.object(game_session_module, 'DISCONNECT_GRACE_S', 1):
+                ws_a, ws_b = await self._matched_pair(uri)
+                await ws_a.close()   # alice disconnects and never comes back
+
+                countdown = await _recv(ws_b)
+                assert countdown["type"] == PLAYER_DISCONNECTED
+
+                game_over = await _recv(ws_b)
+                assert game_over["type"] == EVENT
+                assert game_over["topic"] == "game.over"
+                assert game_over["payload"]["winner"] == "b"
+                assert game_over["payload"]["reason"] == "opponent_disconnected"
+
+                await asyncio.sleep(0.1)   # let the ELO-update task finish
+                alice = await asyncio.to_thread(server_state.user_repo.get_user, "alice")
+                bob = await asyncio.to_thread(server_state.user_repo.get_user, "bob")
+                assert alice.elo_rating == 1184
+                assert bob.elo_rating == 1216
+
+                await ws_b.close()
+        finally:
+            await _stop_test_server(server, server_state, matchmaking_task)
+
+    def test_no_reconnect_within_grace_period_auto_resigns(self):
+        asyncio.run(self._run_timeout())
 
 
 class TestNetworkGameClientLoginPlayAndOpponentEventOverRealSockets:

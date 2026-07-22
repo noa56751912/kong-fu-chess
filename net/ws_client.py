@@ -7,8 +7,9 @@ from model.move_record import MoveRecord
 from model.position import Position
 from net.protocol import (
     CANCEL_SEARCH, ERROR, EVENT, GAME_OVER, JUMP, LOGIN, LOGIN_OK, MATCH_FOUND,
-    MOVE, NO_MATCH_FOUND, PLAY, SYNC_STATE, decode, deserialize_board, encode,
-    position_to_square, square_to_position,
+    MOVE, NO_MATCH_FOUND, PLAY, PLAYER_DISCONNECTED, PLAYER_RECONNECTED,
+    SYNC_STATE, decode, deserialize_board, encode, position_to_square,
+    square_to_position,
 )
 from realtime.motion import PendingJump, PendingMove
 from rules.piece_config import JUMP as JUMP_STATE, MOVE as MOVE_STATE
@@ -42,6 +43,10 @@ class NetworkGameClient:
         self.room_id: Optional[str] = None
         self.searching: bool = False
         self.no_match_found: bool = False
+        # Set while the opponent is disconnected and their auto-resign grace
+        # period is counting down; cleared on reconnect or once the game ends.
+        self.opponent_disconnect_username: Optional[str] = None
+        self.opponent_disconnect_countdown_s: Optional[int] = None
         # Bumped on every SYNC_STATE, so a caller tracking its own wall-clock-
         # derived render clock (client_main.py) can tell "a fresh clock_ms
         # just arrived, re-anchor to it" apart from "nothing changed".
@@ -104,6 +109,12 @@ class NetworkGameClient:
         elif msg_type == GAME_OVER:
             self.game_over = True
             self.winner = message.get("winner")
+        elif msg_type == PLAYER_DISCONNECTED:
+            self.opponent_disconnect_username = message.get("username")
+            self.opponent_disconnect_countdown_s = message.get("countdown_s")
+        elif msg_type == PLAYER_RECONNECTED:
+            self.opponent_disconnect_username = None
+            self.opponent_disconnect_countdown_s = None
         elif msg_type == MATCH_FOUND:
             self.searching = False
             self.room_id = message.get("room_id")
@@ -135,6 +146,10 @@ class NetworkGameClient:
         # until the next move.started/jump.started event arrives.
         self.pending_moves.clear()
         self.pending_jumps.clear()
+        # A resync (join, or a reconnect landing here) means any stale
+        # opponent-disconnect countdown from before is no longer meaningful.
+        self.opponent_disconnect_username = None
+        self.opponent_disconnect_countdown_s = None
         self.sync_version += 1
 
     def _apply_event(self, topic: str, payload: dict) -> None:
@@ -198,6 +213,8 @@ class NetworkGameClient:
     def _on_game_over(self, payload: dict, rows: int) -> None:
         self.game_over = True
         self.winner = payload.get("winner")
+        self.opponent_disconnect_username = None
+        self.opponent_disconnect_countdown_s = None
 
     _EVENT_HANDLERS = {
         "move.started": _on_move_started,

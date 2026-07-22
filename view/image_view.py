@@ -39,6 +39,8 @@ CAPTURE_FLASH_MS = 500
 CAPTURE_FLASH_COLOR = (0, 0, 255)  # BGR, red
 CAPTURE_FLASH_ALPHA = 0.5
 
+DISCONNECT_BANNER_COLOR = (0, 215, 255, 255)  # BGRA, gold - matches SELECTION_COLOR
+
 # Extra UI chrome around the board proper: a score strip above (black, who
 # starts at the top of the board) and below (white), plus a move-log column
 # on either side (white's moves on the left, black's on the right). Kept as
@@ -272,6 +274,18 @@ class ImageView(Renderer):
         for pos in expired:
             del self._capture_flashes[pos]
 
+    def _draw_disconnect_banner(self, frame: Img, username: str, countdown_s: int) -> None:
+        h, w = frame.img.shape[:2]
+        text = f"{username} disconnected - auto-resign in {countdown_s}s"
+        (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        x, y = (w - text_w) // 2, TOP_MARGIN + 24
+        pad = 8
+        overlay = frame.img.copy()
+        cv2.rectangle(overlay, (x - pad, y - text_h - pad), (x + text_w + pad, y + pad),
+                      (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, frame.img, 0.4, 0, frame.img)
+        frame.put_text(text, x, y, 0.6, DISCONNECT_BANNER_COLOR, 2)
+
     def _draw_game_over(self, frame: Img, winner: Optional[str], score: dict[str, int]) -> None:
         h, w = frame.img.shape[:2]
         overlay = frame.img.copy()
@@ -296,7 +310,8 @@ class ImageView(Renderer):
                move_log: Optional[list[MoveRecord]] = None,
                game_over: bool = False,
                winner: Optional[str] = None,
-               selection_targets: Optional[Iterable[Position]] = None) -> None:
+               selection_targets: Optional[Iterable[Position]] = None,
+               disconnect_notice: Optional[tuple[str, int]] = None) -> None:
         background = self._ensure_background(board)
         frame = Img()
         frame.img = background.img.copy()
@@ -357,6 +372,8 @@ class ImageView(Renderer):
         self._draw_move_log(frame, board.cols * self.cell_size, board.rows, move_log or [])
         if game_over:
             self._draw_game_over(frame, winner, score)
+        elif disconnect_notice is not None:
+            self._draw_disconnect_banner(frame, *disconnect_notice)
 
         output = cv2.cvtColor(frame.img, cv2.COLOR_BGRA2BGR)
         if window_size is not None:
