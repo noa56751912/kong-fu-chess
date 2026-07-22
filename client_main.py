@@ -6,6 +6,7 @@ from typing import Optional
 
 import cv2
 
+from auth.login_cli import Credentials, prompt_credentials
 from input.board_mapper import pixel_to_cell
 from model.position import Position
 from net.ws_client import NetworkGameClient
@@ -14,6 +15,7 @@ from view.image_view import (
 )
 
 QUIT_KEYS = {27, ord('q')}  # ESC, q
+MAX_LOGIN_ATTEMPTS = 3
 
 # Known simplification for this phase: capture flash/beep (wired in Phase 0
 # via ImageView.subscribe_to(engine.bus)) isn't hooked up here. That effect's
@@ -37,25 +39,31 @@ class LocalSelection:
         self.pos: Optional[Position] = None
 
 
-def _start_network_thread(uri: str, client: NetworkGameClient) -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
-    """Runs the asyncio websocket connection on a dedicated background
-    thread, so the main thread stays free for OpenCV's synchronous
-    render/event loop - the two never share the event loop, only the
-    NetworkGameClient's plain-data attributes (safe under the GIL for the
-    simple attribute reads/writes both sides do)."""
+def _start_network_thread(uri: str, client: NetworkGameClient,
+                           credentials: Credentials) -> tuple[asyncio.AbstractEventLoop, threading.Thread, bool]:
+    """Runs the asyncio websocket connection - including the LOGIN handshake,
+    which must happen before run()'s general dispatch loop starts consuming
+    messages - on a dedicated background thread, so the main thread stays
+    free for OpenCV's synchronous render/event loop. The two never share the
+    event loop, only NetworkGameClient's plain-data attributes (safe under
+    the GIL for the simple reads/writes both sides do). Returns once login
+    has succeeded or failed (not once the whole session ends)."""
     loop = asyncio.new_event_loop()
     ready = threading.Event()
     failure: list[BaseException] = []
+    login_result: list[bool] = []
 
     async def runner():
         try:
             await client.connect(uri)
+            login_result.append(await client.login(credentials.username, credentials.password))
         except Exception as exc:
             failure.append(exc)
             return
         finally:
             ready.set()
-        await client.run()
+        if login_result and login_result[0]:
+            await client.run()
 
     def thread_main():
         asyncio.set_event_loop(loop)
@@ -63,10 +71,10 @@ def _start_network_thread(uri: str, client: NetworkGameClient) -> tuple[asyncio.
 
     thread = threading.Thread(target=thread_main, daemon=True)
     thread.start()
-    ready.wait(timeout=10)
+    ready.wait(timeout=15)
     if failure:
         raise failure[0]
-    return loop, thread
+    return loop, thread, bool(login_result and login_result[0])
 
 
 def _handle_click(client: NetworkGameClient, selection: LocalSelection, pos: Position,
@@ -116,14 +124,27 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
-    client = NetworkGameClient()
-    loop, thread = _start_network_thread(f"ws://{args.host}:{args.port}", client)
+    uri = f"ws://{args.host}:{args.port}"
+    client = loop = thread = None
+    for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
+        credentials = prompt_credentials()
+        client = NetworkGameClient()
+        loop, thread, logged_in = _start_network_thread(uri, client, credentials)
+        if logged_in:
+            break
+        reason = client.last_error.get("reason") if client.last_error else None
+        print(f"Login failed{f' ({reason})' if reason else ''}.")
+    else:
+        print("Too many failed login attempts.")
+        return
+
+    print(f"Logged in as {client.username} (rating {client.rating})")
 
     deadline = time.perf_counter() + 10
     while client.board is None and time.perf_counter() < deadline and thread.is_alive():
         time.sleep(0.05)
     if client.board is None:
-        print("Could not connect to the server (no initial state received).")
+        print("Did not receive initial game state after logging in.")
         return
 
     view = ImageView()
