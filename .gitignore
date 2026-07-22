@@ -1,0 +1,3 @@
+# Runtime SQLite data (contains hashed passwords) - never committed.
+/data/
+*.db
