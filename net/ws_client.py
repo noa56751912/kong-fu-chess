@@ -6,8 +6,8 @@ from model.board import Board
 from model.move_record import MoveRecord
 from model.position import Position
 from net.protocol import (
-    ERROR, EVENT, GAME_OVER, JUMP, MOVE, SYNC_STATE, decode, deserialize_board,
-    encode, position_to_square, square_to_position,
+    ERROR, EVENT, GAME_OVER, JUMP, LOGIN, LOGIN_OK, MOVE, SYNC_STATE, decode,
+    deserialize_board, encode, position_to_square, square_to_position,
 )
 from realtime.motion import PendingJump, PendingMove
 from rules.piece_config import JUMP as JUMP_STATE, MOVE as MOVE_STATE
@@ -36,6 +36,8 @@ class NetworkGameClient:
         self.pending_moves: list[PendingMove] = []
         self.pending_jumps: list[PendingJump] = []
         self.last_error: Optional[dict] = None
+        self.username: Optional[str] = None
+        self.rating: Optional[int] = None
         # Bumped on every SYNC_STATE, so a caller tracking its own wall-clock-
         # derived render clock (client_main.py) can tell "a fresh clock_ms
         # just arrived, re-anchor to it" apart from "nothing changed".
@@ -45,6 +47,20 @@ class NetworkGameClient:
 
     async def connect(self, uri: str) -> None:
         self._connection = await websockets.connect(uri)
+
+    async def login(self, username: str, password: str) -> bool:
+        """The required first exchange on a fresh connection: a plain
+        request/response, read directly (not via run()'s general dispatch
+        loop, which isn't running yet). An unknown username auto-registers
+        server-side; a known one must match its stored password."""
+        await self._connection.send(encode({"type": LOGIN, "username": username, "password": password}))
+        reply = decode(await self._connection.recv())
+        if reply.get("type") == LOGIN_OK:
+            self.username = username
+            self.rating = reply.get("rating")
+            return True
+        self.last_error = reply
+        return False
 
     async def close(self) -> None:
         if self._connection is not None:

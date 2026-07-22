@@ -7,6 +7,8 @@ from engine.game_engine import GameEngine
 from model.piece import BLACK, WHITE
 from net.bus_bridge import BusBridge
 from net.protocol import SYNC_STATE, encode, position_to_square, serialize_board
+from persistence.elo import compute_new_ratings
+from persistence.user_repo import UserRepo
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +28,15 @@ class GameSession:
     same process.
     """
 
-    def __init__(self, starting_grid: list[list[str]]):
+    def __init__(self, starting_grid: list[list[str]], user_repo: Optional[UserRepo] = None):
         self.engine = GameEngine(build_board(starting_grid))
         self.connections: dict[str, object] = {}   # color -> websocket connection
+        self.usernames: dict[str, str] = {}         # color -> logged-in username
         self.bridge = BusBridge(self.engine.bus, self.engine.state.board.rows, self.broadcast_nowait)
         self._tick_task: Optional[asyncio.Task] = None
+        self._user_repo = user_repo
+        if user_repo is not None:
+            self.engine.bus.subscribe('game.over', self._on_game_over)
 
     def assign_color(self) -> Optional[str]:
         """The first connection is White, the second Black; anyone after that
@@ -41,8 +47,37 @@ class GameSession:
             return BLACK
         return None
 
-    def add_player(self, color: str, connection) -> None:
+    def add_player(self, color: str, connection, username: str) -> None:
         self.connections[color] = connection
+        self.usernames[color] = username
+
+    def _on_game_over(self, payload: dict) -> None:
+        """Bus handlers are synchronous, and an ELO update is a blocking
+        SQLite write - so this only schedules the actual update as a task
+        rather than performing it inline, the same pattern broadcast_nowait
+        uses for socket sends."""
+        winner_color = payload.get('winner')
+        if winner_color is None:
+            return
+        loser_color = BLACK if winner_color == WHITE else WHITE
+        winner_username = self.usernames.get(winner_color)
+        loser_username = self.usernames.get(loser_color)
+        if winner_username is None or loser_username is None:
+            return
+        asyncio.create_task(self._update_ratings(winner_username, loser_username))
+
+    async def _update_ratings(self, winner_username: str, loser_username: str) -> None:
+        winner = await asyncio.to_thread(self._user_repo.get_user, winner_username)
+        loser = await asyncio.to_thread(self._user_repo.get_user, loser_username)
+        if winner is None or loser is None:
+            return
+        new_winner_rating, new_loser_rating = compute_new_ratings(
+            winner.elo_rating, loser.elo_rating, result_a=1.0)
+        await asyncio.to_thread(self._user_repo.update_rating, winner_username, new_winner_rating)
+        await asyncio.to_thread(self._user_repo.update_rating, loser_username, new_loser_rating)
+        logger.info("ratings updated: %s %d->%d, %s %d->%d",
+                    winner_username, winner.elo_rating, new_winner_rating,
+                    loser_username, loser.elo_rating, new_loser_rating)
 
     def broadcast_nowait(self, message: str) -> None:
         """Fire-and-forget send to every connected player - called from
