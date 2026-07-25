@@ -1,8 +1,8 @@
 import argparse
 import asyncio
 import logging
-import secrets
 import sqlite3
+from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 import websockets
@@ -11,24 +11,15 @@ from matchmaking.queue import MatchmakingQueue, Waiting
 from model.piece import BLACK, WHITE
 from net.game_session import GameSession
 from net.protocol import (
-    CANCEL_SEARCH, ERROR, JUMP, LOGIN, LOGIN_FAIL, LOGIN_OK, MATCH_FOUND, MOVE,
-    NO_MATCH_FOUND, PLAY, ProtocolError, decode, encode, square_to_position,
+    CANCEL_SEARCH, CREATE_ROOM, ERROR, JOIN_ROOM, JUMP, LOGIN, LOGIN_FAIL,
+    LOGIN_OK, MATCH_FOUND, MOVE, NO_MATCH_FOUND, PLAY, ROOM_CREATED,
+    ProtocolError, decode, encode, square_to_position,
 )
 from persistence.db import connect as connect_db
 from persistence.user_repo import DEFAULT_RATING, UserRepo
+from rooms.room_manager import RoomManager
 
 logger = logging.getLogger(__name__)
-
-STARTING_POSITION = [
-    "bR bN bB bQ bK bB bN bR".split(),
-    "bP bP bP bP bP bP bP bP".split(),
-    ". . . . . . . .".split(),
-    ". . . . . . . .".split(),
-    ". . . . . . . .".split(),
-    ". . . . . . . .".split(),
-    "wP wP wP wP wP wP wP wP".split(),
-    "wR wN wB wQ wK wB wN wR".split(),
-]
 
 # How often the matchmaking loop checks for pairings/timeouts. A plain
 # await asyncio.sleep() between passes - not a blocking wait - so it costs
@@ -39,15 +30,17 @@ MATCHMAKING_INTERVAL_S = 1
 class ConnectionContext:
     """Per-connection state that outlives any single incoming message: which
     username this connection logged in as, and - once matched or joined into
-    a room - which GameSession and color it belongs to. A connection with
-    session=None is still in the lobby (only PLAY/CANCEL_SEARCH/room commands
-    are valid); once session is set, MOVE/JUMP are dispatched to it."""
+    a room - which GameSession/color/spectator status it belongs to. A
+    connection with session=None is still in the lobby (only PLAY/
+    CANCEL_SEARCH/CREATE_ROOM/JOIN_ROOM are valid); once session is set,
+    MOVE/JUMP are dispatched to it (rejected outright if is_spectator)."""
 
     def __init__(self, connection, username: str):
         self.connection = connection
         self.username = username
         self.session: Optional[GameSession] = None
         self.color: Optional[str] = None
+        self.is_spectator: bool = False
 
 
 class ServerState:
@@ -55,12 +48,15 @@ class ServerState:
         self.user_repo = user_repo
         self.queue = MatchmakingQueue()
         self.sessions: dict[str, GameSession] = {}
+        self.rooms = RoomManager(self.sessions, user_repo)
         # username -> (session, color) for every player currently in an
         # in-progress game, so a fresh LOGIN for that username can be
         # recognized as a reconnect instead of a normal lobby entry. Left in
         # place (not deleted) once a game ends - handle_connection checks
         # session.engine.state.game_over at lookup time, so a stale entry is
-        # simply ignored rather than needing active cleanup.
+        # simply ignored rather than needing active cleanup. Spectators are
+        # deliberately never registered here - a disconnected spectator just
+        # re-enters the lobby on reconnect rather than resuming as a spectator.
         self.active_players: dict[str, tuple[GameSession, str]] = {}
 
 
@@ -120,21 +116,68 @@ async def _await_login(connection, user_repo: UserRepo) -> Optional[str]:
     return username
 
 
-async def _dispatch_lobby(msg_type: Optional[str], context: ConnectionContext, server_state: ServerState) -> None:
+async def _seat_player(session: GameSession, color: str, context: ConnectionContext,
+                        server_state: ServerState) -> None:
+    """Shared by matchmaking and rooms: registers a connection as one of a
+    session's two actual players (as opposed to add_spectator) and sends it
+    the session's current full state."""
+    context.session = session
+    context.color = color
+    session.add_player(color, context.connection, context.username)
+    server_state.active_players[context.username] = (session, color)
+    await session.send_sync_state(context.connection, color)
+
+
+async def _dispatch_lobby(message: dict, msg_type: Optional[str], context: ConnectionContext,
+                           server_state: ServerState) -> None:
     if msg_type == PLAY:
         user = await asyncio.to_thread(server_state.user_repo.get_user, context.username)
         rating = user.elo_rating if user is not None else DEFAULT_RATING
         server_state.queue.add(context, rating)
+
     elif msg_type == CANCEL_SEARCH:
         server_state.queue.remove_connection(context.connection)
+
+    elif msg_type == CREATE_ROOM:
+        room_id, session = server_state.rooms.create_room()
+        session.start_tick_loop()
+        await context.connection.send(encode({"type": ROOM_CREATED, "room_id": room_id}))
+        await _seat_player(session, WHITE, context, server_state)
+        logger.info("%s created room %s", context.username, room_id)
+
+    elif msg_type == JOIN_ROOM:
+        room_id = message.get("room_id")
+        session = server_state.rooms.get_room(room_id) if room_id else None
+        if session is None:
+            await _send_error(context.connection, "ROOM_NOT_FOUND", str(room_id))
+            return
+        color = session.assign_color()
+        if color is not None:
+            await _seat_player(session, color, context, server_state)
+            logger.info("%s joined room %s as %s", context.username, room_id, color)
+        else:
+            context.session = session
+            context.is_spectator = True
+            session.add_spectator(context.connection)
+            await session.send_sync_state(context.connection, None)
+            logger.info("%s joined room %s as a spectator", context.username, room_id)
+
     else:
         await _send_error(context.connection, "UNKNOWN_MESSAGE_TYPE", str(msg_type))
 
 
 async def _dispatch_in_game(message: dict, msg_type: Optional[str], context: ConnectionContext) -> None:
+    connection = context.connection
+
+    if context.is_spectator:
+        if msg_type in (MOVE, JUMP):
+            await _send_error(connection, "SPECTATOR_CANNOT_MOVE", "spectators cannot move pieces")
+        else:
+            await _send_error(connection, "UNKNOWN_MESSAGE_TYPE", str(msg_type))
+        return
+
     session = context.session
     rows = session.engine.state.board.rows
-    connection = context.connection
 
     if msg_type == MOVE:
         try:
@@ -181,6 +224,7 @@ async def handle_connection(connection, server_state: ServerState) -> None:
 
     try:
         async for raw in connection:
+            logger.debug("recv from %s: %s", username, raw)
             try:
                 message = decode(raw)
             except ProtocolError as exc:
@@ -188,27 +232,26 @@ async def handle_connection(connection, server_state: ServerState) -> None:
                 continue
             msg_type = message.get("type")
             if context.session is None:
-                await _dispatch_lobby(msg_type, context, server_state)
+                await _dispatch_lobby(message, msg_type, context, server_state)
             else:
                 await _dispatch_in_game(message, msg_type, context)
     finally:
         server_state.queue.remove_connection(connection)
         if context.session is not None:
-            context.session.on_disconnect(context.color)
+            if context.is_spectator:
+                context.session.remove_spectator(connection)
+            else:
+                context.session.on_disconnect(context.color)
         logger.info("%s disconnected", username)
 
 
 async def _start_matched_game(pair: tuple[Waiting, Waiting], server_state: ServerState) -> None:
     waiting_a, waiting_b = pair
-    session = GameSession(STARTING_POSITION, server_state.user_repo)
-    match_id = secrets.token_hex(3)
-    server_state.sessions[match_id] = session
-
-    for color, waiting in ((WHITE, waiting_a), (BLACK, waiting_b)):
-        waiting.context.session = session
-        waiting.context.color = color
-        session.add_player(color, waiting.context.connection, waiting.context.username)
-        server_state.active_players[waiting.context.username] = (session, color)
+    # A matched game and a manually-created room are the same underlying
+    # concept (a fresh GameSession keyed by a random id in
+    # server_state.sessions) - reuses RoomManager.create_room() rather than
+    # duplicating that bookkeeping here with a second random-id scheme.
+    match_id, session = server_state.rooms.create_room()
     session.start_tick_loop()
 
     for color, waiting in ((WHITE, waiting_a), (BLACK, waiting_b)):
@@ -216,7 +259,7 @@ async def _start_matched_game(pair: tuple[Waiting, Waiting], server_state: Serve
             await waiting.context.connection.send(encode({
                 "type": MATCH_FOUND, "room_id": match_id, "color": color,
             }))
-            await session.send_sync_state(waiting.context.connection, color)
+            await _seat_player(session, color, waiting.context, server_state)
         except Exception:
             # The other player, if still connected, will see this one
             # time out via Phase D's disconnect handling once it's wired up.
@@ -259,13 +302,33 @@ async def serve(host: str = "0.0.0.0", port: int = 8765, db_path: Optional[str] 
         matchmaking_task.cancel()
 
 
+def _configure_logging(log_path: str) -> None:
+    """Console (INFO+) for interactive use, plus a rotating server.log (DEBUG+,
+    so it also captures every websocket message logged at DEBUG level) for
+    later troubleshooting - per-connection/session activity and every bus
+    event, per the spec's server- and client-side logging requirement."""
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    root.addHandler(console)
+
+    file_handler = RotatingFileHandler(log_path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root.addHandler(file_handler)
+
+
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Kong Fu Chess WebSocket server")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--db-path", default=None)
+    parser.add_argument("--log-path", default="server.log")
     args = parser.parse_args()
+    _configure_logging(args.log_path)
     asyncio.run(serve(args.host, args.port, args.db_path))
 
 

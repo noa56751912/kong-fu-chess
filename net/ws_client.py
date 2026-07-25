@@ -1,3 +1,4 @@
+import logging
 from typing import Optional
 
 import websockets
@@ -6,13 +7,15 @@ from model.board import Board
 from model.move_record import MoveRecord
 from model.position import Position
 from net.protocol import (
-    CANCEL_SEARCH, ERROR, EVENT, GAME_OVER, JUMP, LOGIN, LOGIN_OK, MATCH_FOUND,
-    MOVE, NO_MATCH_FOUND, PLAY, PLAYER_DISCONNECTED, PLAYER_RECONNECTED,
-    SYNC_STATE, decode, deserialize_board, encode, position_to_square,
-    square_to_position,
+    CANCEL_SEARCH, CREATE_ROOM, ERROR, EVENT, GAME_OVER, JOIN_ROOM, JUMP,
+    LOGIN, LOGIN_OK, MATCH_FOUND, MOVE, NO_MATCH_FOUND, PLAY,
+    PLAYER_DISCONNECTED, PLAYER_RECONNECTED, ROOM_CREATED, SYNC_STATE, decode,
+    deserialize_board, encode, position_to_square, square_to_position,
 )
 from realtime.motion import PendingJump, PendingMove
 from rules.piece_config import JUMP as JUMP_STATE, MOVE as MOVE_STATE
+
+logger = logging.getLogger(__name__)
 
 
 class NetworkGameClient:
@@ -57,13 +60,20 @@ class NetworkGameClient:
     async def connect(self, uri: str) -> None:
         self._connection = await websockets.connect(uri)
 
+    async def _send(self, message: dict) -> None:
+        raw = encode(message)
+        await self._connection.send(raw)
+        logger.debug("sent: %s", raw)
+
     async def login(self, username: str, password: str) -> bool:
         """The required first exchange on a fresh connection: a plain
         request/response, read directly (not via run()'s general dispatch
         loop, which isn't running yet). An unknown username auto-registers
         server-side; a known one must match its stored password."""
-        await self._connection.send(encode({"type": LOGIN, "username": username, "password": password}))
-        reply = decode(await self._connection.recv())
+        await self._send({"type": LOGIN, "username": username, "password": password})
+        raw = await self._connection.recv()
+        logger.debug("recv: %s", raw)
+        reply = decode(raw)
         if reply.get("type") == LOGIN_OK:
             self.username = username
             self.rating = reply.get("rating")
@@ -78,26 +88,33 @@ class NetworkGameClient:
     async def send_play(self) -> None:
         self.no_match_found = False
         self.searching = True
-        await self._connection.send(encode({"type": PLAY}))
+        await self._send({"type": PLAY})
 
     async def send_cancel_search(self) -> None:
         self.searching = False
-        await self._connection.send(encode({"type": CANCEL_SEARCH}))
+        await self._send({"type": CANCEL_SEARCH})
+
+    async def send_create_room(self) -> None:
+        await self._send({"type": CREATE_ROOM})
+
+    async def send_join_room(self, room_id: str) -> None:
+        await self._send({"type": JOIN_ROOM, "room_id": room_id})
 
     async def send_move(self, frm: Position, to: Position) -> None:
         rows = self.board.rows
-        await self._connection.send(encode({
+        await self._send({
             "type": MOVE, "from": position_to_square(frm, rows), "to": position_to_square(to, rows),
-        }))
+        })
 
     async def send_jump(self, pos: Position) -> None:
         rows = self.board.rows
-        await self._connection.send(encode({"type": JUMP, "square": position_to_square(pos, rows)}))
+        await self._send({"type": JUMP, "square": position_to_square(pos, rows)})
 
     async def run(self) -> None:
         """Consume incoming messages, applying each to the local mirror, until
         the connection closes."""
         async for raw in self._connection:
+            logger.debug("recv: %s", raw)
             self.handle_message(decode(raw))
 
     def handle_message(self, message: dict) -> None:
@@ -123,6 +140,10 @@ class NetworkGameClient:
         elif msg_type == NO_MATCH_FOUND:
             self.searching = False
             self.no_match_found = True
+        elif msg_type == ROOM_CREATED:
+            self.room_id = message.get("room_id")
+            # color/board follow on the SYNC_STATE the server sends right
+            # after, same as MATCH_FOUND - nothing further to do with this one.
         elif msg_type == ERROR:
             self.last_error = message
 

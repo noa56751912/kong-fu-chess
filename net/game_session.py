@@ -3,6 +3,7 @@ import logging
 from typing import Optional
 
 from boardio.board_parser import build_board
+from bus.logging_subscriber import attach_logging
 from engine.game_engine import GameEngine
 from model.piece import BLACK, WHITE
 from net.bus_bridge import BusBridge
@@ -22,6 +23,20 @@ TICK_MS = 50
 # How long a disconnected player has to reconnect before auto-resigning.
 DISCONNECT_GRACE_S = 20
 
+# Shared by matchmaking (net/ws_server.py) and rooms (rooms/room_manager.py) -
+# lives here, not in ws_server.py, so room_manager.py can use it without a
+# circular import back to ws_server.py.
+STARTING_POSITION = [
+    "bR bN bB bQ bK bB bN bR".split(),
+    "bP bP bP bP bP bP bP bP".split(),
+    ". . . . . . . .".split(),
+    ". . . . . . . .".split(),
+    ". . . . . . . .".split(),
+    ". . . . . . . .".split(),
+    "wP wP wP wP wP wP wP wP".split(),
+    "wR wN wB wQ wK wB wN wR".split(),
+]
+
 
 class GameSession:
     """One authoritative GameEngine plus the asyncio machinery to run it and
@@ -34,11 +49,14 @@ class GameSession:
     same process.
     """
 
-    def __init__(self, starting_grid: list[list[str]], user_repo: Optional[UserRepo] = None):
+    def __init__(self, starting_grid: list[list[str]], user_repo: Optional[UserRepo] = None,
+                 label: str = ""):
         self.engine = GameEngine(build_board(starting_grid))
         self.connections: dict[str, object] = {}   # color -> websocket connection
         self.usernames: dict[str, str] = {}         # color -> logged-in username
+        self.spectators: list[object] = []           # read-only connections (rooms/, Phase E)
         self.bridge = BusBridge(self.engine.bus, self.engine.state.board.rows, self.broadcast_nowait)
+        attach_logging(self.engine.bus, label)   # every session/room logs its own bus activity
         self._tick_task: Optional[asyncio.Task] = None
         self._disconnect_timers: dict[str, asyncio.Task] = {}   # color -> pending auto-resign timer
         self._user_repo = user_repo
@@ -57,6 +75,13 @@ class GameSession:
     def add_player(self, color: str, connection, username: str) -> None:
         self.connections[color] = connection
         self.usernames[color] = username
+
+    def add_spectator(self, connection) -> None:
+        self.spectators.append(connection)
+
+    def remove_spectator(self, connection) -> None:
+        if connection in self.spectators:
+            self.spectators.remove(connection)
 
     def _on_game_over(self, payload: dict) -> None:
         """Bus handlers are synchronous, and an ELO update is a blocking
@@ -153,16 +178,19 @@ class GameSession:
         asyncio.create_task(self._safe_send(opponent_connection, message))
 
     def broadcast_nowait(self, message: str) -> None:
-        """Fire-and-forget send to every connected player - called from
-        synchronous bus-handler code, so it schedules the actual (async)
-        socket writes as tasks rather than awaiting them itself."""
+        """Fire-and-forget send to every connected player and spectator -
+        called from synchronous bus-handler code, so it schedules the actual
+        (async) socket writes as tasks rather than awaiting them itself."""
         for connection in self.connections.values():
+            asyncio.create_task(self._safe_send(connection, message))
+        for connection in self.spectators:
             asyncio.create_task(self._safe_send(connection, message))
 
     @staticmethod
     async def _safe_send(connection, message: str) -> None:
         try:
             await connection.send(message)
+            logger.debug("sent: %s", message)
         except Exception:
             logger.exception("failed to deliver a message to a connection")
 

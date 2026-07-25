@@ -1,13 +1,16 @@
 import argparse
 import asyncio
+import logging
 import threading
 import time
+from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 import cv2
 
 from auth.login_cli import Credentials, prompt_credentials
 from client.home_screen import run_home_screen
+from client.room_dialog import run_room_dialog
 from input.board_mapper import pixel_to_cell
 from model.position import Position
 from net.ws_client import NetworkGameClient
@@ -119,11 +122,32 @@ def _mouse_callback(event, x, y, flags, param):
         asyncio.run_coroutine_threadsafe(client.send_jump(pos), loop)
 
 
+def _configure_logging(log_path: str) -> None:
+    """Console (INFO+) for interactive use, plus a rotating client.log
+    (DEBUG+) capturing every websocket message this client sends/receives -
+    per the spec's client-side logging requirement, mirroring
+    net/ws_server.py's server-side setup."""
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    root.addHandler(console)
+
+    file_handler = RotatingFileHandler(log_path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root.addHandler(file_handler)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kong Fu Chess networked client")
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--log-path", default="client.log")
     args = parser.parse_args()
+    _configure_logging(args.log_path)
 
     uri = f"ws://{args.host}:{args.port}"
     client = loop = thread = None
@@ -141,9 +165,13 @@ def main() -> None:
 
     print(f"Logged in as {client.username} (rating {client.rating})")
 
-    if not run_home_screen(client, loop):
-        asyncio.run_coroutine_threadsafe(client.close(), loop)
-        return
+    while client.board is None:
+        outcome = run_home_screen(client, loop)
+        if outcome == "quit":
+            asyncio.run_coroutine_threadsafe(client.close(), loop)
+            return
+        if outcome == "room" and not run_room_dialog(client, loop):
+            continue   # cancelled/quit the room dialog - back to the home screen
     if client.board is None:
         print("Matched, but did not receive the initial game state.")
         return

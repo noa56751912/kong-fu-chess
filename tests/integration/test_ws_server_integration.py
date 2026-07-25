@@ -14,9 +14,9 @@ import net.game_session as game_session_module
 import net.ws_server as ws_server
 import matchmaking.queue as matchmaking_queue
 from net.protocol import (
-    ERROR, EVENT, LOGIN, LOGIN_FAIL, LOGIN_OK, MATCH_FOUND, MOVE,
-    NO_MATCH_FOUND, PLAY, PLAYER_DISCONNECTED, PLAYER_RECONNECTED, SYNC_STATE,
-    decode, encode,
+    CREATE_ROOM, ERROR, EVENT, JOIN_ROOM, JUMP, LOGIN, LOGIN_FAIL, LOGIN_OK,
+    MATCH_FOUND, MOVE, NO_MATCH_FOUND, PLAY, PLAYER_DISCONNECTED,
+    PLAYER_RECONNECTED, ROOM_CREATED, SYNC_STATE, decode, encode,
 )
 from net.ws_client import NetworkGameClient
 from net.ws_server import ServerState, handle_connection
@@ -297,6 +297,78 @@ class TestDisconnectReconnectOverRealSockets:
 
     def test_no_reconnect_within_grace_period_auto_resigns(self):
         asyncio.run(self._run_timeout())
+
+
+class TestRoomsAndSpectatorsOverRealSockets:
+
+    async def _run(self):
+        server, port, server_state, matchmaking_task = await _start_test_server()
+        try:
+            uri = f"ws://localhost:{port}"
+            async with websockets.connect(uri) as ws_a, websockets.connect(uri) as ws_b, \
+                    websockets.connect(uri) as ws_c:
+                await _login(ws_a, "host")
+                await ws_a.send(encode({"type": CREATE_ROOM}))
+                created = await _recv(ws_a)
+                assert created["type"] == ROOM_CREATED
+                room_id = created["room_id"]
+                sync_a = await _recv(ws_a)
+                assert sync_a["type"] == SYNC_STATE
+                assert sync_a["color"] == "w"   # room creator is always White
+
+                await _login(ws_b, "joiner")
+                await ws_b.send(encode({"type": JOIN_ROOM, "room_id": room_id}))
+                sync_b = await _recv(ws_b)
+                assert sync_b["type"] == SYNC_STATE
+                assert sync_b["color"] == "b"   # second joiner is Black
+
+                # A third joiner to the same room is a read-only spectator,
+                # not rejected the way a full matchmaking session would be.
+                await _login(ws_c, "watcher")
+                await ws_c.send(encode({"type": JOIN_ROOM, "room_id": room_id}))
+                sync_c = await _recv(ws_c)
+                assert sync_c["type"] == SYNC_STATE
+                assert sync_c["color"] is None
+
+                # A real move is broadcast to the spectator too...
+                await ws_a.send(encode({"type": MOVE, "from": "e2", "to": "e4"}))
+                event_a = await _recv(ws_a)
+                event_b = await _recv(ws_b)
+                event_c = await _recv(ws_c)
+                assert event_a == event_b == event_c
+                assert event_a["topic"] == "move.started"
+
+                # ...but the spectator cannot move any piece, even a legal one.
+                await ws_c.send(encode({"type": MOVE, "from": "e7", "to": "e5"}))
+                error = await _recv(ws_c)
+                assert error["type"] == ERROR
+                assert error["code"] == "SPECTATOR_CANNOT_MOVE"
+
+                await ws_c.send(encode({"type": JUMP, "square": "e7"}))
+                error2 = await _recv(ws_c)
+                assert error2["type"] == ERROR
+                assert error2["code"] == "SPECTATOR_CANNOT_MOVE"
+        finally:
+            await _stop_test_server(server, server_state, matchmaking_task)
+
+    def test_first_two_joiners_play_third_spectates(self):
+        asyncio.run(self._run())
+
+    async def _run_room_not_found(self):
+        server, port, server_state, matchmaking_task = await _start_test_server()
+        try:
+            uri = f"ws://localhost:{port}"
+            async with websockets.connect(uri) as ws_a:
+                await _login(ws_a, "solo")
+                await ws_a.send(encode({"type": JOIN_ROOM, "room_id": "nonexistent"}))
+                error = await _recv(ws_a)
+                assert error["type"] == ERROR
+                assert error["code"] == "ROOM_NOT_FOUND"
+        finally:
+            await _stop_test_server(server, server_state, matchmaking_task)
+
+    def test_joining_an_unknown_room_id_is_an_error(self):
+        asyncio.run(self._run_room_not_found())
 
 
 class TestNetworkGameClientLoginPlayAndOpponentEventOverRealSockets:
