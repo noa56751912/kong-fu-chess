@@ -67,9 +67,15 @@ def run_room_dialog(client: NetworkGameClient, loop: asyncio.AbstractEventLoop) 
             canvas = np.full((WINDOW_HEIGHT, WINDOW_WIDTH, 3), BG_COLOR, dtype=np.uint8)
             if client.room_id is not None:
                 # Per the spec: the generated room id is written at the top
-                # of the screen once a room exists.
+                # of the screen once a room exists. The server doesn't send
+                # this connection a SYNC_STATE (client.board stays None,
+                # so this dialog doesn't move on to the game window) until
+                # a second player actually joins - giving the creator time
+                # to actually read and share this before the screen changes.
                 cv2.putText(canvas, f"Room: {client.room_id}", (20, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, TEXT_COLOR, 2, cv2.LINE_AA)
+                cv2.putText(canvas, "Waiting for opponent to join...", (20, 155),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_COLOR, 1, cv2.LINE_AA)
             else:
                 cv2.putText(canvas, "room name", (20, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_COLOR, 1, cv2.LINE_AA)
