@@ -17,7 +17,8 @@ QUIT_KEYS = {27, ord('q')}   # ESC, q
 
 
 def _mouse_callback(event, x, y, flags, param):
-    play_button, room_button, click_holder = param
+    play_button, room_button, click_holder, mouse_pos = param
+    mouse_pos[0], mouse_pos[1] = x, y
     if event != cv2.EVENT_LBUTTONDOWN:
         return
     if play_button.enabled and play_button.contains(x, y):
@@ -41,10 +42,11 @@ def run_home_screen(client: NetworkGameClient, loop: asyncio.AbstractEventLoop) 
     play_button = Button(60, 140, 130, 40, "Play")
     room_button = Button(WINDOW_WIDTH - 190, 140, 130, 40, "Room")
     click_holder = [None]   # "play" | "room", set from the mouse callback
+    mouse_pos = [-1, -1]
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_NAME, WINDOW_WIDTH, WINDOW_HEIGHT)
-    cv2.setMouseCallback(WINDOW_NAME, _mouse_callback, (play_button, room_button, click_holder))
+    cv2.setMouseCallback(WINDOW_NAME, _mouse_callback, (play_button, room_button, click_holder, mouse_pos))
 
     try:
         while True:
@@ -69,8 +71,8 @@ def run_home_screen(client: NetworkGameClient, loop: asyncio.AbstractEventLoop) 
 
             play_button.enabled = not client.searching
             play_button.label = "Searching..." if client.searching else "Play"
-            play_button.draw(canvas)
-            room_button.draw(canvas)
+            play_button.draw(canvas, hovered=play_button.contains(*mouse_pos))
+            room_button.draw(canvas, hovered=room_button.contains(*mouse_pos))
 
             if client.no_match_found:
                 cv2.putText(canvas, "Could not find a match. Try again.", (20, 210),

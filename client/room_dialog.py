@@ -25,9 +25,24 @@ def _copy_to_clipboard(text: str) -> None:
     dependency, and never worth crashing the dialog over if it fails."""
     try:
         subprocess.run(["clip"], input=text.encode("utf-16-le"), check=True,
-                        creationflags=subprocess.CREATE_NO_WINDOW)
+                        creationflags=subprocess.CREATE_NO_WINDOW, timeout=2)
     except Exception:
         pass
+
+
+def _read_clipboard() -> str:
+    """Best-effort only, via PowerShell's built-in Get-Clipboard - Windows
+    has no equivalent of `clip` for the read direction, but this needs no
+    new dependency either."""
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+            capture_output=True, text=True, check=True,
+            creationflags=subprocess.CREATE_NO_WINDOW, timeout=2,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
 
 
 def _draw_room_code(canvas, room_id: str) -> None:
@@ -47,57 +62,55 @@ def run_room_dialog(client: NetworkGameClient, loop: asyncio.AbstractEventLoop) 
     this, but per the project's no-other-GUI-library constraint this is
     built entirely on plain cv2 primitives, same as home_screen.py.
 
-    Three views, chosen purely from client state (never a local step
-    counter, so a stray extra SYNC_STATE etc. can't desync the UI from
-    reality):
-      - setup: no room_id yet - textbox + Create/Join/Cancel.
-      - waiting: room_id known, client.board still None - the room exists
-        but has one player (this one). Shows the code big and alone, plus a
-        Copy button and Cancel - nothing here transitions on its own.
-      - ready: client.board is populated (an opponent is seated too). Shows
-        an explicit Enter Room button - the player decides when to leave
-        this screen, never an automatic cutover the instant a sync arrives.
+    Two views, chosen purely from client state (never a local step
+    counter, so a stray extra message can't desync the UI from reality):
+      - setup: no room_id yet - textbox (+ Paste) + Create/Join/Cancel.
+      - in_room: room_id known (just created, or just joined) - the code
+        shown big and alone plus a Copy button, and an Enter Room button
+        the player clicks whenever *they* decide to leave for the game
+        window - never an automatic cutover the instant a sync arrives.
 
-    Returns True once the player clicks Enter Room (ready for client_main.py
-    to open the game window), False if cancelled/quit.
+    Returns True once Enter Room is clicked (client.board is populated by
+    then, ready for client_main.py to open the game window), False if
+    cancelled/quit.
     """
-    input_box = TextInputBox(20, 60, WINDOW_WIDTH - 40, 34, max_length=12)
-    create_button = Button(20, 110, 100, 40, "Create")
-    join_button = Button(140, 110, 100, 40, "Join")
-    cancel_button_setup = Button(260, 110, 100, 40, "Cancel")
+    input_box = TextInputBox(20, 55, 250, 34, max_length=12)
+    paste_button = Button(280, 55, 80, 34, "Paste")
+    create_button = Button(20, 105, 100, 40, "Create")
+    join_button = Button(140, 105, 100, 40, "Join")
+    cancel_button_setup = Button(260, 105, 100, 40, "Cancel")
 
     copy_button = Button(250, 30, 110, 55, "Copy")
-    cancel_button_waiting = Button(140, 140, 100, 40, "Cancel")
-
     enter_button = Button(90, 140, 110, 42, "Enter Room")
-    cancel_button_ready = Button(210, 140, 100, 42, "Cancel")
+    cancel_button_room = Button(210, 140, 100, 42, "Cancel")
 
-    action = [None]   # "create" | "join" | "cancel" | "copy" | "enter"
+    action = [None]   # "create" | "join" | "cancel" | "copy" | "paste" | "enter"
+    mouse_pos = [-1, -1]
     # Remembered locally the moment *this* client asks to join a room - the
     # server never echoes a joiner's own room_id back, so without this the
-    # "waiting"/"ready" views would have nothing to display for a joiner.
+    # in_room view would have nothing to display for a joiner.
     joined_room_id = [None]
 
     def mouse_callback(event, x, y, flags, param):
+        mouse_pos[0], mouse_pos[1] = x, y
         if event != cv2.EVENT_LBUTTONDOWN:
             return
-        if client.board is not None:
-            if enter_button.contains(x, y):
+        in_room = client.room_id is not None or joined_room_id[0] is not None
+        if in_room:
+            if enter_button.enabled and enter_button.contains(x, y):
                 action[0] = "enter"
-            elif cancel_button_ready.contains(x, y):
+            elif cancel_button_room.contains(x, y):
                 action[0] = "cancel"
-            return
-        if client.room_id is not None or joined_room_id[0] is not None:
-            if copy_button.contains(x, y):
+            elif copy_button.contains(x, y):
                 action[0] = "copy"
-            elif cancel_button_waiting.contains(x, y):
-                action[0] = "cancel"
             return
         if input_box.contains(x, y):
             input_box.focused = True
             return
         input_box.focused = False
-        if create_button.contains(x, y):
+        if paste_button.contains(x, y):
+            action[0] = "paste"
+        elif create_button.contains(x, y):
             action[0] = "create"
         elif join_button.contains(x, y):
             action[0] = "join"
@@ -117,10 +130,13 @@ def run_room_dialog(client: NetworkGameClient, loop: asyncio.AbstractEventLoop) 
                 client.room_id = None
                 return False
             if action[0] == "enter":
-                return True   # client.board is already populated
+                return True
             if action[0] == "copy":
                 action[0] = None
                 _copy_to_clipboard(client.room_id or joined_room_id[0] or "")
+            elif action[0] == "paste":
+                action[0] = None
+                input_box.text = _read_clipboard()[:input_box.max_length]
             elif action[0] == "create":
                 action[0] = None
                 asyncio.run_coroutine_threadsafe(client.send_create_room(), loop)
@@ -131,28 +147,26 @@ def run_room_dialog(client: NetworkGameClient, loop: asyncio.AbstractEventLoop) 
                     asyncio.run_coroutine_threadsafe(client.send_join_room(input_box.text), loop)
 
             room_id = client.room_id or joined_room_id[0]
+            enter_button.enabled = client.board is not None
             canvas = np.full((WINDOW_HEIGHT, WINDOW_WIDTH, 3), BG_COLOR, dtype=np.uint8)
 
-            if client.board is not None:
-                if room_id is not None:
-                    _draw_room_code(canvas, room_id)
-                cv2.putText(canvas, "Opponent is here - enter when ready.", (20, 110),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_COLOR, 1, cv2.LINE_AA)
-                enter_button.draw(canvas)
-                cancel_button_ready.draw(canvas)
-            elif room_id is not None:
+            if room_id is not None:
                 _draw_room_code(canvas, room_id)
-                copy_button.draw(canvas)
-                cv2.putText(canvas, "Waiting for opponent to join...", (20, 110),
+                copy_button.draw(canvas, hovered=copy_button.contains(*mouse_pos))
+                status = "Ready - enter whenever you like." if enter_button.enabled \
+                    else "Setting up the room..."
+                cv2.putText(canvas, status, (20, 110),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_COLOR, 1, cv2.LINE_AA)
-                cancel_button_waiting.draw(canvas)
+                enter_button.draw(canvas, hovered=enter_button.contains(*mouse_pos))
+                cancel_button_room.draw(canvas, hovered=cancel_button_room.contains(*mouse_pos))
             else:
                 cv2.putText(canvas, "Enter a room code to join, or create one:", (20, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_COLOR, 1, cv2.LINE_AA)
                 input_box.draw(canvas)
-                create_button.draw(canvas)
-                join_button.draw(canvas)
-                cancel_button_setup.draw(canvas)
+                paste_button.draw(canvas, hovered=paste_button.contains(*mouse_pos))
+                create_button.draw(canvas, hovered=create_button.contains(*mouse_pos))
+                join_button.draw(canvas, hovered=join_button.contains(*mouse_pos))
+                cancel_button_setup.draw(canvas, hovered=cancel_button_setup.contains(*mouse_pos))
                 if client.last_error is not None and client.last_error.get("code") == "ROOM_NOT_FOUND":
                     cv2.putText(canvas, "Room not found.", (20, 185),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, ERROR_COLOR, 1, cv2.LINE_AA)

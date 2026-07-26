@@ -312,23 +312,19 @@ class TestRoomsAndSpectatorsOverRealSockets:
                 created = await _recv(ws_a)
                 assert created["type"] == ROOM_CREATED
                 room_id = created["room_id"]
-                # No SYNC_STATE yet for the creator - there's no opponent to
-                # play against, so the room dialog must stay open (showing
-                # the room id long enough to actually share it) rather than
-                # jump straight to an empty game window.
-                with pytest.raises(asyncio.TimeoutError):
-                    await asyncio.wait_for(ws_a.recv(), timeout=0.5)
+                # SYNC_STATE follows immediately, same as a normal join -
+                # whether/when to leave the room dialog for the game window
+                # is a client-side decision (the Enter Room button), not
+                # something the server gates on an opponent existing.
+                sync_a = await _recv(ws_a)
+                assert sync_a["type"] == SYNC_STATE
+                assert sync_a["color"] == "w"   # room creator is always White
 
                 await _login(ws_b, "joiner")
                 await ws_b.send(encode({"type": JOIN_ROOM, "room_id": room_id}))
                 sync_b = await _recv(ws_b)
                 assert sync_b["type"] == SYNC_STATE
                 assert sync_b["color"] == "b"   # second joiner is Black
-
-                # The room becoming full is what finally syncs the creator too.
-                sync_a = await _recv(ws_a)
-                assert sync_a["type"] == SYNC_STATE
-                assert sync_a["color"] == "w"   # room creator is always White
 
                 # A third joiner to the same room is a read-only spectator,
                 # not rejected the way a full matchmaking session would be.

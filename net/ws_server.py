@@ -148,17 +148,14 @@ async def _dispatch_lobby(message: dict, msg_type: Optional[str], context: Conne
     elif msg_type == CREATE_ROOM:
         room_id, session = server_state.rooms.create_room()
         session.start_tick_loop()
-        color = session.assign_color()
-        _register_player(session, color, context, server_state)
         await context.connection.send(encode({"type": ROOM_CREATED, "room_id": room_id}))
+        await _seat_player(session, WHITE, context, server_state)
         logger.info("%s created room %s", context.username, room_id)
-        # Deliberately no SYNC_STATE yet: the creator has no opponent, so
-        # there's nothing to play. They stay on the room dialog - which is
-        # what's actually showing the room_id for them to share - until the
-        # JOIN_ROOM branch below fills the second seat and syncs both sides
-        # at once. Sending it immediately (as an earlier version did) made
-        # client_main.py's "client.board is not None -> open the game
-        # window" check fire before the room id was ever drawn on screen.
+        # SYNC_STATE is sent right away, same as a normal join - the server
+        # doesn't gate the creator on an opponent existing. Whether/when to
+        # actually leave the room dialog for the game window is entirely a
+        # client-side UX decision (client/room_dialog.py's Enter Room
+        # button), not something the protocol should be timing.
 
     elif msg_type == JOIN_ROOM:
         room_id = message.get("room_id")
@@ -169,14 +166,6 @@ async def _dispatch_lobby(message: dict, msg_type: Optional[str], context: Conne
         color = session.assign_color()
         if color is not None:
             await _seat_player(session, color, context, server_state)
-            # The room just became full - the other seat (the creator, or
-            # whoever filled it) has been waiting without a SYNC_STATE
-            # until now; this is the moment the game actually starts for
-            # them too.
-            other_color = BLACK if color == WHITE else WHITE
-            other_connection = session.connections.get(other_color)
-            if other_connection is not None:
-                await session.send_sync_state(other_connection, other_color)
             logger.info("%s joined room %s as %s", context.username, room_id, color)
         else:
             context.session = session
