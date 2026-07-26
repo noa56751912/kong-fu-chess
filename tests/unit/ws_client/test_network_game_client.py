@@ -1,3 +1,6 @@
+import sys
+import threading
+
 from engine.game_engine import GameEngine
 from model.board import Board
 from model.piece import BLACK, KING, KNIGHT, ROOK, WHITE
@@ -109,3 +112,56 @@ class TestNetworkGameClientMirrorsAirborneDefense:
         assert client.board.piece_at(Position(0, 2)).id == target.id
         assert client._pieces_by_id[mover.id].captured is True
         assert client.pending_moves == []
+
+
+class TestThreadSafety:
+    """client.board is a dict-of-Position mutated in place by the background
+    network thread (see NetworkGameClient.run()); client_main.py's render
+    loop iterates it on the main thread. Without client.lock held across
+    both, this reliably raises "dictionary changed size during iteration"
+    within milliseconds - this reproduces exactly that concurrency pattern
+    (one thread mutating in a tight loop, another iterating in a tight loop)
+    and asserts neither thread ever fails."""
+
+    def test_concurrent_mutation_and_iteration_under_the_lock_never_raises(self):
+        board = Board(3, 3)
+        board.spawn_piece(WHITE, ROOK, Position(0, 0))
+        client = make_client_synced(board, color=WHITE)
+
+        errors: list[Exception] = []
+        stop = threading.Event()
+
+        def render_loop():
+            try:
+                while not stop.is_set():
+                    with client.lock:
+                        list(client.board)   # same access pattern as ImageView.render's `for pos, piece in board:`
+            except Exception as exc:   # noqa: BLE001 - capturing for the assertion below
+                errors.append(exc)
+
+        # A short switch interval forces the interpreter to hand control
+        # between threads far more often than the 5ms default - without
+        # this, a race that would eventually bite in a real, longer-running
+        # session doesn't reliably reproduce in a short test run either way
+        # (confirmed: the *unlocked* version of this exact test only failed
+        # consistently once the interval was lowered like this).
+        original_interval = sys.getswitchinterval()
+        sys.setswitchinterval(0.00001)
+        renderer = threading.Thread(target=render_loop, daemon=True)
+        renderer.start()
+
+        try:
+            pos_a, pos_b = Position(0, 0), Position(0, 2)
+            for _ in range(20000):
+                with client.lock:
+                    frm = pos_a if client.board.piece_at(pos_a) is not None else pos_b
+                    to = pos_b if frm == pos_a else pos_a
+                    client.board.move_piece(client.board.piece_at(frm), to)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            stop.set()
+            renderer.join(timeout=2)
+            sys.setswitchinterval(original_interval)
+
+        assert errors == []

@@ -49,9 +49,11 @@ def _start_network_thread(uri: str, client: NetworkGameClient,
     which must happen before run()'s general dispatch loop starts consuming
     messages - on a dedicated background thread, so the main thread stays
     free for OpenCV's synchronous render/event loop. The two never share the
-    event loop, only NetworkGameClient's plain-data attributes (safe under
-    the GIL for the simple reads/writes both sides do). Returns once login
-    has succeeded or failed (not once the whole session ends)."""
+    event loop, only NetworkGameClient's attributes - guarded by client.lock
+    (see NetworkGameClient.run()), since client.board holds a dict mutated
+    in place and the GIL alone doesn't make iterating it on one thread safe
+    against another thread inserting/deleting a key mid-iteration. Returns
+    once login has succeeded or failed (not once the whole session ends)."""
     loop = asyncio.new_event_loop()
     ready = threading.Event()
     failure: list[BaseException] = []
@@ -112,14 +114,19 @@ def _mouse_callback(event, x, y, flags, param):
         return
     if client.board is None:
         return
-    bx, by = view.to_board_coords(x, y)
-    pos = pixel_to_cell(bx, by, client.board)
-    if pos is None:
-        return
-    if event == cv2.EVENT_LBUTTONDOWN:
-        _handle_click(client, selection, pos, loop)
-    elif event == cv2.EVENT_RBUTTONDOWN:
-        asyncio.run_coroutine_threadsafe(client.send_jump(pos), loop)
+    # Same lock render() and the network thread use - a click reads
+    # client.board too, and holding it here keeps every access to this
+    # client's mutable state going through one consistent rule rather than
+    # relying on which individual reads happen to be safe without it.
+    with client.lock:
+        bx, by = view.to_board_coords(x, y)
+        pos = pixel_to_cell(bx, by, client.board)
+        if pos is None:
+            return
+        if event == cv2.EVENT_LBUTTONDOWN:
+            _handle_click(client, selection, pos, loop)
+        elif event == cv2.EVENT_RBUTTONDOWN:
+            asyncio.run_coroutine_threadsafe(client.send_jump(pos), loop)
 
 
 def _configure_logging(log_path: str) -> None:
@@ -211,9 +218,13 @@ def main() -> None:
         # selection_targets is deliberately omitted (None): the server is the
         # sole authority on legal destinations, and duplicating RuleEngine
         # client-side just to highlight them isn't worth it for this phase.
-        view.render(client.board, local_clock_ms, client.pending_moves, selection.pos,
-                    window_size, client.score, client.moves, client.game_over, client.winner, None,
-                    disconnect_notice)
+        # Holds the same lock the network thread takes while applying a
+        # SYNC_STATE/EVENT message, so render() never iterates client.board
+        # while that thread is mid-mutation of it (see NetworkGameClient.lock).
+        with client.lock:
+            view.render(client.board, local_clock_ms, client.pending_moves, selection.pos,
+                        window_size, client.score, client.moves, client.game_over, client.winner, None,
+                        disconnect_notice)
 
         key = cv2.waitKey(1) & 0xFF
         if key in QUIT_KEYS:

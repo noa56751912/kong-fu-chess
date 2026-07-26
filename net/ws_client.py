@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import Optional
 
 import websockets
@@ -54,6 +55,15 @@ class NetworkGameClient:
         # derived render clock (client_main.py) can tell "a fresh clock_ms
         # just arrived, re-anchor to it" apart from "nothing changed".
         self.sync_version: int = 0
+        # Guards every mutation of the attributes above, all of which are
+        # written here on the background network thread (see
+        # client_main.py's _start_network_thread) and read on the main
+        # thread by the render loop. self.board specifically holds a plain
+        # dict mutated in place (vacate/move_piece/remove_piece) - iterating
+        # it in ImageView.render() while this thread deletes/inserts a key
+        # raises "dictionary changed size during iteration" without this
+        # lock held across both the mutation and the render call.
+        self.lock = threading.Lock()
         self._pieces_by_id: dict[int, object] = {}
         self._connection = None
 
@@ -115,7 +125,8 @@ class NetworkGameClient:
         the connection closes."""
         async for raw in self._connection:
             logger.debug("recv: %s", raw)
-            self.handle_message(decode(raw))
+            with self.lock:
+                self.handle_message(decode(raw))
 
     def handle_message(self, message: dict) -> None:
         msg_type = message.get("type")

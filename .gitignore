@@ -1,3 +1,6 @@
 # Runtime SQLite data (contains hashed passwords) - never committed.
 /data/
 *.db
+
+# Rotating server/client logs (net/ws_server.py, client_main.py).
+*.log
