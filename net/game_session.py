@@ -75,6 +75,12 @@ class GameSession:
     def add_player(self, color: str, connection, username: str) -> None:
         self.connections[color] = connection
         self.usernames[color] = username
+        # SYNC_STATE is only ever sent once per recipient (join/reconnect),
+        # so a player already connected before their opponent joins would
+        # otherwise never learn that name - this lets ImageView show real
+        # usernames instead of "White"/"Black" for both sides, not just
+        # whichever side happened to be seated first.
+        self.engine.bus.publish('player.joined', {'color': color, 'username': username})
 
     def add_spectator(self, connection) -> None:
         self.spectators.append(connection)
@@ -212,6 +218,7 @@ class GameSession:
             "color": color,   # which side (if any) this recipient is playing
             "board": serialize_board(state.board),
             "score": state.score,
+            "usernames": dict(self.usernames),   # whichever seats are already filled
             "moves": moves,
             "clock_ms": state.clock_ms,
             "game_over": state.game_over,

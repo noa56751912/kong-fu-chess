@@ -41,9 +41,20 @@ class NetworkGameClient:
         self.winner: Optional[str] = None
         self.pending_moves: list[PendingMove] = []
         self.pending_jumps: list[PendingJump] = []
+        # (ready_at_clock_ms, apply_fn) pairs - board mutations (arrivals,
+        # captures) held back until tick() sees the caller's own render
+        # clock reach ready_at, so a move never visually snaps to its
+        # destination ahead of this client's own interpolation of it.
+        self._pending_arrivals: list[tuple[float, object]] = []
         self.last_error: Optional[dict] = None
         self.username: Optional[str] = None
         self.rating: Optional[int] = None
+        # color -> username for whichever seats are filled so far - not just
+        # this connection's own, so ImageView can show real names instead of
+        # "White"/"Black" for both sides. Backfilled by SYNC_STATE for seats
+        # already filled at the time this client joined, and kept current
+        # afterward by the player.joined event for anyone who joins later.
+        self.usernames: dict[str, str] = {}
         self.room_id: Optional[str] = None
         self.searching: bool = False
         self.no_match_found: bool = False
@@ -128,6 +139,22 @@ class NetworkGameClient:
             with self.lock:
                 self.handle_message(decode(raw))
 
+    def tick(self, local_clock_ms: float) -> None:
+        """Applies any buffered arrival/capture (see _pending_arrivals)
+        whose target time has been reached by the caller's own render
+        clock. Must be called once per frame from client_main.py's render
+        loop, under self.lock - the buffering only prevents a visual jump
+        if something is actually driving the clock forward and periodically
+        checking it."""
+        if not self._pending_arrivals:
+            return
+        ready = [item for item in self._pending_arrivals if local_clock_ms >= item[0]]
+        if not ready:
+            return
+        self._pending_arrivals = [item for item in self._pending_arrivals if local_clock_ms < item[0]]
+        for _, apply in sorted(ready, key=lambda item: item[0]):
+            apply()
+
     def handle_message(self, message: dict) -> None:
         msg_type = message.get("type")
         if msg_type == SYNC_STATE:
@@ -163,6 +190,7 @@ class NetworkGameClient:
         self.board = deserialize_board(message["board"])
         self._pieces_by_id = {piece.id: piece for _, piece in self.board}
         self.score = message["score"]
+        self.usernames = dict(message.get("usernames", {}))
         self.clock_ms = message["clock_ms"]
         self.game_over = message["game_over"]
         self.winner = message["winner"]
@@ -178,6 +206,7 @@ class NetworkGameClient:
         # until the next move.started/jump.started event arrives.
         self.pending_moves.clear()
         self.pending_jumps.clear()
+        self._pending_arrivals.clear()
         # A resync (join, or a reconnect landing here) means any stale
         # opponent-disconnect countdown from before is no longer meaningful.
         self.opponent_disconnect_username = None
@@ -201,10 +230,26 @@ class NetworkGameClient:
     def _on_move_arrived(self, payload: dict, rows: int) -> None:
         piece = self._pieces_by_id[payload["piece_id"]]
         to = square_to_position(payload["to"], rows)
-        captured = self.board.move_piece(piece, to)
-        if captured is not None:
-            captured.captured = True
-        self.pending_moves = [m for m in self.pending_moves if m.piece.id != piece.id]
+
+        def apply() -> None:
+            captured = self.board.move_piece(piece, to)
+            if captured is not None:
+                captured.captured = True
+            self.pending_moves = [m for m in self.pending_moves if m.piece.id != piece.id]
+
+        # The network event fires the instant the *server* resolves the
+        # arrival, which is typically a little ahead of this client's own
+        # local_clock_ms (see client_main.py - it lags the server's clock by
+        # network/processing latency). Applying the board mutation
+        # immediately would yank the piece to its destination before this
+        # client's own interpolation of it had visually finished, i.e. a
+        # jump instead of a smooth slide. Buffering it until tick() sees
+        # local_clock_ms catch up to this move's own arrive_time means the
+        # piece is always already fully interpolated there by the time the
+        # "official" arrival happens - nothing to visually snap.
+        pending = next((m for m in self.pending_moves if m.piece.id == piece.id), None)
+        ready_at = pending.arrive_time if pending is not None else self.clock_ms
+        self._pending_arrivals.append((ready_at, apply))
 
     def _on_jump_started(self, payload: dict, rows: int) -> None:
         piece = self._pieces_by_id[payload["piece_id"]]
@@ -217,22 +262,38 @@ class NetworkGameClient:
         self.pending_jumps = [j for j in self.pending_jumps if j.piece.id != piece.id]
 
     def _on_piece_captured(self, payload: dict, rows: int) -> None:
-        # move.arrived already detaches a captured piece from the board (via
-        # board.move_piece, exactly like the server); the airborne-defense
-        # case has no accompanying move.arrived (the arriving piece dies
-        # mid-air, never resolving as a normal arrival), so this handles both
-        # the board detachment (idempotent) and dropping any lingering
-        # pending_moves/pending_jumps entry for the captured piece - without
-        # this, an airborne capture would leave a "ghost" in-flight piece
-        # that ImageView keeps trying to interpolate forever.
+        # move.arrived's buffered apply() already detaches a captured piece
+        # from the board (via board.move_piece, exactly like the server);
+        # the airborne-defense case has no accompanying move.arrived (the
+        # arriving piece dies mid-air, never resolving as a normal arrival),
+        # so this still needs to handle removal itself there.
         piece = self._pieces_by_id.get(payload["piece_id"])
-        if piece is None:
+        if piece is None or piece.captured:
             return
+
+        # If some other piece is mid-flight *toward* this one's square, it's
+        # the attacker - align this piece's removal with that same
+        # move's buffered arrival so the victim doesn't vanish before the
+        # attacker has visually arrived. Otherwise (airborne-defense, or no
+        # matching pending move for any other reason) there's no slide to
+        # wait for, so it's removed immediately, same as before.
+        incoming = next((m for m in self.pending_moves if m.to == piece.cell and m.piece.id != piece.id), None)
+        if incoming is not None:
+            self._pending_arrivals.append((incoming.arrive_time, lambda p=piece: self._remove_captured_piece(p)))
+        else:
+            self._remove_captured_piece(piece)
+
+        # A "ghost" in-flight entry for the captured piece itself (relevant
+        # to the airborne case, where the captured piece was the one
+        # mid-flight) must not linger regardless of which branch above ran -
+        # otherwise ImageView would keep trying to interpolate it forever.
+        self.pending_moves = [m for m in self.pending_moves if m.piece.id != piece.id]
+        self.pending_jumps = [j for j in self.pending_jumps if j.piece.id != piece.id]
+
+    def _remove_captured_piece(self, piece) -> None:
         if not piece.captured:
             piece.captured = True
             self.board.remove_piece(piece)
-        self.pending_moves = [m for m in self.pending_moves if m.piece.id != piece.id]
-        self.pending_jumps = [j for j in self.pending_jumps if j.piece.id != piece.id]
 
     def _on_piece_state_changed(self, payload: dict, rows: int) -> None:
         piece = self._pieces_by_id.get(payload["piece_id"])
@@ -248,6 +309,9 @@ class NetworkGameClient:
         self.opponent_disconnect_username = None
         self.opponent_disconnect_countdown_s = None
 
+    def _on_player_joined(self, payload: dict, rows: int) -> None:
+        self.usernames[payload["color"]] = payload["username"]
+
     _EVENT_HANDLERS = {
         "move.started": _on_move_started,
         "move.arrived": _on_move_arrived,
@@ -257,4 +321,5 @@ class NetworkGameClient:
         "piece.state_changed": _on_piece_state_changed,
         "score.changed": _on_score_changed,
         "game.over": _on_game_over,
+        "player.joined": _on_player_joined,
     }

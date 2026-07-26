@@ -12,6 +12,7 @@ BRIDGED_TOPICS = [
     'jump.started', 'jump.landed',
     'piece.captured', 'piece.state_changed',
     'score.changed', 'game.over',
+    'player.joined',
 ]
 
 

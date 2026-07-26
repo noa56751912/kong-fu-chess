@@ -222,9 +222,13 @@ def main() -> None:
         # SYNC_STATE/EVENT message, so render() never iterates client.board
         # while that thread is mid-mutation of it (see NetworkGameClient.lock).
         with client.lock:
+            # Applies any move/capture whose animation this client's own
+            # clock has now caught up to - keeps arrivals from snapping
+            # ahead of the slide animation still catching up to them.
+            client.tick(local_clock_ms)
             view.render(client.board, local_clock_ms, client.pending_moves, selection.pos,
                         window_size, client.score, client.moves, client.game_over, client.winner, None,
-                        disconnect_notice)
+                        disconnect_notice, client.usernames)
 
         key = cv2.waitKey(1) & 0xFF
         if key in QUIT_KEYS:

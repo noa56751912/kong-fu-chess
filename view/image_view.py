@@ -234,9 +234,13 @@ class ImageView(Renderer):
         w = frame.img.shape[1]
         frame.put_text(text, (w - text_w) // 2, y, font_size, TEXT_COLOR, thickness)
 
-    def _draw_score_bars(self, frame: Img, score: dict[str, int]) -> None:
-        self._put_centered(frame, f"Black: {score.get(BLACK, 0)}", TOP_MARGIN - 14, 0.6, 2)
-        self._put_centered(frame, f"White: {score.get(WHITE, 0)}", frame.img.shape[0] - 14, 0.6, 2)
+    def _draw_score_bars(self, frame: Img, score: dict[str, int],
+                          usernames: Optional[dict[str, str]] = None) -> None:
+        usernames = usernames or {}
+        black_label = usernames.get(BLACK, "Black")
+        white_label = usernames.get(WHITE, "White")
+        self._put_centered(frame, f"{black_label}: {score.get(BLACK, 0)}", TOP_MARGIN - 14, 0.6, 2)
+        self._put_centered(frame, f"{white_label}: {score.get(WHITE, 0)}", frame.img.shape[0] - 14, 0.6, 2)
 
     def _draw_move_column(self, frame: Img, x: int, header: str, moves: list[MoveRecord], rows: int) -> None:
         y = TOP_MARGIN + 20
@@ -248,12 +252,15 @@ class ImageView(Renderer):
             frame.put_text(line, x, y, 0.42, TEXT_COLOR, 1)
             y += 20
 
-    def _draw_move_log(self, frame: Img, board_w: int, rows: int, move_log: list[MoveRecord]) -> None:
+    def _draw_move_log(self, frame: Img, board_w: int, rows: int, move_log: list[MoveRecord],
+                        usernames: Optional[dict[str, str]] = None) -> None:
         """White's moves in the left column, black's in the right - one panel per side."""
+        usernames = usernames or {}
         white_moves = [record for record in move_log if record.color == WHITE]
         black_moves = [record for record in move_log if record.color == BLACK]
-        self._draw_move_column(frame, 8, "White", white_moves, rows)
-        self._draw_move_column(frame, LEFT_PANEL_WIDTH + board_w + 8, "Black", black_moves, rows)
+        self._draw_move_column(frame, 8, usernames.get(WHITE, "White"), white_moves, rows)
+        self._draw_move_column(frame, LEFT_PANEL_WIDTH + board_w + 8,
+                                usernames.get(BLACK, "Black"), black_moves, rows)
 
     def _draw_capture_flashes(self, frame: Img, now_ms: int) -> None:
         expired = []
@@ -286,16 +293,20 @@ class ImageView(Renderer):
         cv2.addWeighted(overlay, 0.6, frame.img, 0.4, 0, frame.img)
         frame.put_text(text, x, y, 0.6, DISCONNECT_BANNER_COLOR, 2)
 
-    def _draw_game_over(self, frame: Img, winner: Optional[str], score: dict[str, int]) -> None:
+    def _draw_game_over(self, frame: Img, winner: Optional[str], score: dict[str, int],
+                         usernames: Optional[dict[str, str]] = None) -> None:
         h, w = frame.img.shape[:2]
         overlay = frame.img.copy()
         cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.55, frame.img, 0.45, 0, frame.img)
 
-        label = "White wins!" if winner == WHITE else "Black wins!" if winner == BLACK else "Game Over"
+        usernames = usernames or {}
+        white_label = usernames.get(WHITE, "White")
+        black_label = usernames.get(BLACK, "Black")
+        label = f"{white_label} wins!" if winner == WHITE else f"{black_label} wins!" if winner == BLACK else "Game Over"
         title = "Game Over" if winner is None else label
-        white_line = f"White score: {score.get(WHITE, 0)}"
-        black_line = f"Black score: {score.get(BLACK, 0)}"
+        white_line = f"{white_label} score: {score.get(WHITE, 0)}"
+        black_line = f"{black_label} score: {score.get(BLACK, 0)}"
         subtitle = "Press R to restart"
 
         self._put_centered(frame, title, h // 2 - 40, 1.0, 2)
@@ -311,7 +322,8 @@ class ImageView(Renderer):
                game_over: bool = False,
                winner: Optional[str] = None,
                selection_targets: Optional[Iterable[Position]] = None,
-               disconnect_notice: Optional[tuple[str, int]] = None) -> None:
+               disconnect_notice: Optional[tuple[str, int]] = None,
+               usernames: Optional[dict[str, str]] = None) -> None:
         background = self._ensure_background(board)
         frame = Img()
         frame.img = background.img.copy()
@@ -368,10 +380,10 @@ class ImageView(Renderer):
             self._draw_selection(frame, selection)
 
         score = score if score is not None else {}
-        self._draw_score_bars(frame, score)
-        self._draw_move_log(frame, board.cols * self.cell_size, board.rows, move_log or [])
+        self._draw_score_bars(frame, score, usernames)
+        self._draw_move_log(frame, board.cols * self.cell_size, board.rows, move_log or [], usernames)
         if game_over:
-            self._draw_game_over(frame, winner, score)
+            self._draw_game_over(frame, winner, score, usernames)
         elif disconnect_notice is not None:
             self._draw_disconnect_banner(frame, *disconnect_notice)
 

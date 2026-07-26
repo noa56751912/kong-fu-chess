@@ -26,8 +26,20 @@ from persistence.user_repo import UserRepo
 RECV_TIMEOUT = 5
 
 
-async def _recv(ws):
+async def _recv_raw(ws):
     return decode(await asyncio.wait_for(ws.recv(), timeout=RECV_TIMEOUT))
+
+
+async def _recv(ws):
+    """Skips 'player.joined' EVENT broadcasts - ambient noise most tests in
+    this file don't care about (any already-connected player gets one every
+    time anyone else is seated). Tests that specifically want to observe
+    one use _recv_raw instead."""
+    while True:
+        message = await _recv_raw(ws)
+        if message.get("type") == EVENT and message.get("topic") == "player.joined":
+            continue
+        return message
 
 
 async def _login(ws, username: str, password: str = "hunter2") -> dict:
@@ -373,6 +385,48 @@ class TestRoomsAndSpectatorsOverRealSockets:
 
     def test_joining_an_unknown_room_id_is_an_error(self):
         asyncio.run(self._run_room_not_found())
+
+
+class TestUsernamesPropagateOverRealSockets:
+    """SYNC_STATE is only ever sent once per recipient, so a player seated
+    before their opponent joins has no other way to learn that name -
+    verifies the player.joined broadcast (filtered out of _recv by default
+    elsewhere in this file) actually carries it live."""
+
+    async def _run(self):
+        server, port, server_state, matchmaking_task = await _start_test_server()
+        try:
+            uri = f"ws://localhost:{port}"
+            async with websockets.connect(uri) as ws_a:
+                await _login(ws_a, "alice")
+                await ws_a.send(encode({"type": CREATE_ROOM}))
+                created = await _recv(ws_a)
+                room_id = created["room_id"]
+                sync_a = await _recv(ws_a)
+                assert sync_a["usernames"] == {"w": "alice"}   # only alice seated so far
+
+                async with websockets.connect(uri) as ws_b:
+                    await _login(ws_b, "bob")
+                    await ws_b.send(encode({"type": JOIN_ROOM, "room_id": room_id}))
+                    sync_b = await _recv(ws_b)
+                    assert sync_b["usernames"] == {"w": "alice", "b": "bob"}
+
+                    # alice, already connected, learns bob's name live. Also
+                    # somewhere in this stream is a player.joined about
+                    # alice's own seating (harmless, but its exact timing
+                    # relative to the other messages isn't guaranteed) -
+                    # skip past anything that isn't specifically bob's.
+                    while True:
+                        joined = await _recv_raw(ws_a)
+                        if (joined.get("type") == EVENT and joined.get("topic") == "player.joined"
+                                and joined["payload"].get("username") == "bob"):
+                            break
+                    assert joined["payload"] == {"color": "b", "username": "bob"}
+        finally:
+            await _stop_test_server(server, server_state, matchmaking_task)
+
+    def test_already_connected_player_learns_opponents_name_live(self):
+        asyncio.run(self._run())
 
 
 class TestNetworkGameClientLoginPlayAndOpponentEventOverRealSockets:

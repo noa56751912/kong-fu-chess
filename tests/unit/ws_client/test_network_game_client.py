@@ -35,6 +35,14 @@ def deliver(client, sent):
         client.handle_message(decode(raw))
 
 
+def deliver_and_settle(client, sent):
+    """Like deliver(), but also flushes every buffered arrival/capture (see
+    NetworkGameClient.tick) - use this whenever a test wants the board to
+    reflect a move that has actually finished, not just been announced."""
+    deliver(client, sent)
+    client.tick(float("inf"))
+
+
 class TestNetworkGameClientMirrorsSimpleMove:
 
     def test_board_position_matches_server_after_arrival(self):
@@ -44,7 +52,7 @@ class TestNetworkGameClientMirrorsSimpleMove:
 
         engine.move(Position(0, 0), Position(0, 2), requesting_color=WHITE)
         engine.wait(move_duration_ms(ROOK, WHITE, 2))
-        deliver(client, sent)
+        deliver_and_settle(client, sent)
 
         assert client.color == WHITE
         assert client.board.piece_at(Position(0, 2)).id == rook.id
@@ -65,6 +73,33 @@ class TestNetworkGameClientMirrorsSimpleMove:
         assert pm.to == Position(0, 2)
         assert client.board.is_empty(Position(0, 0))   # vacated immediately, same as server
 
+    def test_arrival_does_not_jump_ahead_of_this_clients_own_animation(self):
+        # The whole point of buffering: move.arrived is delivered (the
+        # server has already resolved it) but this client's own render
+        # clock hasn't reached the move's arrive_time yet - the piece must
+        # still be reported as in flight (still interpolating, not yet
+        # snapped to its destination) until tick() catches up.
+        board, engine, sent = make_server(3, 3)
+        rook = board.spawn_piece(WHITE, ROOK, Position(0, 0))
+        client = make_client_synced(board, color=WHITE)
+
+        engine.move(Position(0, 0), Position(0, 2), requesting_color=WHITE)
+        arrive_time = move_duration_ms(ROOK, WHITE, 2)
+        engine.wait(arrive_time)
+        deliver(client, sent)   # move.arrived has been delivered...
+
+        # ...but this client's own clock is still short of arrive_time, so
+        # nothing should have snapped yet.
+        client.tick(arrive_time - 1)
+        assert len(client.pending_moves) == 1
+        assert client.board.piece_at(Position(0, 2)) is None
+
+        # Only once the local clock actually reaches arrive_time does the
+        # buffered arrival apply.
+        client.tick(arrive_time)
+        assert client.pending_moves == []
+        assert client.board.piece_at(Position(0, 2)).id == rook.id
+
 
 class TestNetworkGameClientMirrorsCapture:
 
@@ -76,13 +111,39 @@ class TestNetworkGameClientMirrorsCapture:
 
         engine.move(Position(0, 0), Position(0, 2), requesting_color=WHITE)
         engine.wait(move_duration_ms(ROOK, WHITE, 2))
-        deliver(client, sent)
+        deliver_and_settle(client, sent)
 
         assert client.game_over is True
         assert client.winner == WHITE
         assert client.score[WHITE] == engine.state.score[WHITE]
         client_target = client._pieces_by_id[target.id]
         assert client_target.captured is True
+
+    def test_captured_piece_stays_until_attackers_animation_catches_up(self):
+        # A non-king victim, so the game doesn't end and there's something
+        # left to assert about mid-flight state.
+        board, engine, sent = make_server(3, 3)
+        board.spawn_piece(WHITE, ROOK, Position(0, 0))
+        target = board.spawn_piece(BLACK, KNIGHT, Position(0, 2))
+        client = make_client_synced(board)
+
+        engine.move(Position(0, 0), Position(0, 2), requesting_color=WHITE)
+        arrive_time = move_duration_ms(ROOK, WHITE, 2)
+        engine.wait(arrive_time)
+        deliver(client, sent)   # server has already resolved the capture...
+
+        # ...but this client's own clock hasn't caught up yet, so the
+        # victim must still be there - not vanish before the attacker has
+        # visually arrived.
+        client.tick(arrive_time - 1)
+        client_target = client._pieces_by_id[target.id]
+        assert client_target.captured is False
+        assert client.board.piece_at(Position(0, 2)).id == target.id
+
+        client.tick(arrive_time)
+        assert client_target.captured is True
+        attacker = client.board.piece_at(Position(0, 2))
+        assert attacker is not None and attacker.kind == ROOK
 
 
 class TestNetworkGameClientMirrorsAirborneDefense:
