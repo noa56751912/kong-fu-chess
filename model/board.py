@@ -86,3 +86,12 @@ class Board:
 
     def __iter__(self) -> Iterator[tuple[Position, Piece]]:
         return iter(self._pieces.items())
+
+    def snapshot(self) -> "Board":
+        """A shallow copy (same Piece objects, independent piece map) safe to
+        iterate while the original keeps mutating on another thread - lets a
+        caller release its lock before doing anything slow with the result
+        instead of holding it for the duration."""
+        copy = Board(self.rows, self.cols)
+        copy._pieces = dict(self._pieces)
+        return copy

@@ -117,21 +117,30 @@ async def _await_login(connection, user_repo: UserRepo) -> Optional[str]:
 
 
 def _register_player(session: GameSession, color: str, context: ConnectionContext,
-                      server_state: ServerState) -> None:
+                      server_state: ServerState, rating: int) -> None:
     """Pure bookkeeping, no network I/O: marks a connection as one of a
     session's two actual players (as opposed to add_spectator)."""
     context.session = session
     context.color = color
-    session.add_player(color, context.connection, context.username)
+    session.add_player(color, context.connection, context.username, rating)
     server_state.active_players[context.username] = (session, color)
 
 
 async def _seat_player(session: GameSession, color: str, context: ConnectionContext,
-                        server_state: ServerState) -> None:
+                        server_state: ServerState, rating: Optional[int] = None) -> None:
     """Registers the connection and immediately sends it the session's
     current full state - used by matchmaking (both players are seated in
-    the same instant) and by whoever fills a room's second seat."""
-    _register_player(session, color, context, server_state)
+    the same instant) and by whoever fills a room's second seat.
+
+    `rating` lets a caller that already knows it (matchmaking's Waiting,
+    which fetched it to build the pairing in the first place) skip a
+    redundant DB read; room creation/joining has no such caller and looks
+    it up here instead.
+    """
+    if rating is None:
+        user = await asyncio.to_thread(server_state.user_repo.get_user, context.username)
+        rating = user.elo_rating if user is not None else DEFAULT_RATING
+    _register_player(session, color, context, server_state, rating)
     await session.send_sync_state(context.connection, color)
 
 
@@ -271,7 +280,7 @@ async def _start_matched_game(pair: tuple[Waiting, Waiting], server_state: Serve
             await waiting.context.connection.send(encode({
                 "type": MATCH_FOUND, "room_id": match_id, "color": color,
             }))
-            await _seat_player(session, color, waiting.context, server_state)
+            await _seat_player(session, color, waiting.context, server_state, rating=waiting.rating)
         except Exception:
             # The other player, if still connected, will see this one
             # time out via Phase D's disconnect handling once it's wired up.

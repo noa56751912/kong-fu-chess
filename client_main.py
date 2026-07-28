@@ -219,16 +219,33 @@ def main() -> None:
         # sole authority on legal destinations, and duplicating RuleEngine
         # client-side just to highlight them isn't worth it for this phase.
         # Holds the same lock the network thread takes while applying a
-        # SYNC_STATE/EVENT message, so render() never iterates client.board
-        # while that thread is mid-mutation of it (see NetworkGameClient.lock).
+        # SYNC_STATE/EVENT message - but only long enough to tick() and copy
+        # out what render() needs, not for the render itself. view.render()
+        # is the expensive part (drawing the whole board/panels every frame);
+        # doing that while still holding the lock left it held almost
+        # continuously, since cv2.waitKey(1) is the only other thing in this
+        # loop and returns in ~1ms - starving the network thread of any real
+        # chance to grab the lock and apply an incoming move, so moves could
+        # take seconds (or worse, under load) to actually show up. board is
+        # copied via Board.snapshot() rather than handed over live so render()
+        # never iterates it while the network thread mutates it after the
+        # lock is released.
         with client.lock:
             # Applies any move/capture whose animation this client's own
             # clock has now caught up to - keeps arrivals from snapping
             # ahead of the slide animation still catching up to them.
             client.tick(local_clock_ms)
-            view.render(client.board, local_clock_ms, client.pending_moves, selection.pos,
-                        window_size, client.score, client.moves, client.game_over, client.winner, None,
-                        disconnect_notice, client.usernames)
+            board_snapshot = client.board.snapshot()
+            pending_moves = list(client.pending_moves)
+            score = dict(client.score)
+            moves = list(client.moves)
+            usernames = dict(client.usernames)
+            ratings = dict(client.ratings)
+            game_over = client.game_over
+            winner = client.winner
+        view.render(board_snapshot, local_clock_ms, pending_moves, selection.pos,
+                    window_size, score, moves, game_over, winner, None,
+                    disconnect_notice, usernames, ratings)
 
         key = cv2.waitKey(1) & 0xFF
         if key in QUIT_KEYS:

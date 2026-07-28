@@ -55,6 +55,9 @@ class NetworkGameClient:
         # already filled at the time this client joined, and kept current
         # afterward by the player.joined event for anyone who joins later.
         self.usernames: dict[str, str] = {}
+        # Same shape/lifecycle as usernames above - each seated player's
+        # rating (as of when they sat down, not live-updated mid-game).
+        self.ratings: dict[str, int] = {}
         self.room_id: Optional[str] = None
         self.searching: bool = False
         self.no_match_found: bool = False
@@ -191,6 +194,7 @@ class NetworkGameClient:
         self._pieces_by_id = {piece.id: piece for _, piece in self.board}
         self.score = message["score"]
         self.usernames = dict(message.get("usernames", {}))
+        self.ratings = dict(message.get("ratings", {}))
         self.clock_ms = message["clock_ms"]
         self.game_over = message["game_over"]
         self.winner = message["winner"]
@@ -311,6 +315,8 @@ class NetworkGameClient:
 
     def _on_player_joined(self, payload: dict, rows: int) -> None:
         self.usernames[payload["color"]] = payload["username"]
+        if "rating" in payload:
+            self.ratings[payload["color"]] = payload["rating"]
 
     _EVENT_HANDLERS = {
         "move.started": _on_move_started,

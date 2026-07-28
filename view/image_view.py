@@ -235,12 +235,22 @@ class ImageView(Renderer):
         frame.put_text(text, (w - text_w) // 2, y, font_size, TEXT_COLOR, thickness)
 
     def _draw_score_bars(self, frame: Img, score: dict[str, int],
-                          usernames: Optional[dict[str, str]] = None) -> None:
+                          usernames: Optional[dict[str, str]] = None,
+                          ratings: Optional[dict[str, int]] = None) -> None:
         usernames = usernames or {}
         black_label = usernames.get(BLACK, "Black")
         white_label = usernames.get(WHITE, "White")
-        self._put_centered(frame, f"{black_label}: {score.get(BLACK, 0)}", TOP_MARGIN - 14, 0.6, 2)
-        self._put_centered(frame, f"{white_label}: {score.get(WHITE, 0)}", frame.img.shape[0] - 14, 0.6, 2)
+        # Networked play (ratings given) shows each player's standing;
+        # gui_main.py's local/offline path (ratings=None, no accounts
+        # involved) falls back to the in-match capture score as before.
+        if ratings is not None:
+            black_value = ratings.get(BLACK, "-")
+            white_value = ratings.get(WHITE, "-")
+        else:
+            black_value = score.get(BLACK, 0)
+            white_value = score.get(WHITE, 0)
+        self._put_centered(frame, f"{black_label}: {black_value}", TOP_MARGIN - 14, 0.6, 2)
+        self._put_centered(frame, f"{white_label}: {white_value}", frame.img.shape[0] - 14, 0.6, 2)
 
     def _draw_move_column(self, frame: Img, x: int, header: str, moves: list[MoveRecord], rows: int) -> None:
         y = TOP_MARGIN + 20
@@ -294,7 +304,8 @@ class ImageView(Renderer):
         frame.put_text(text, x, y, 0.6, DISCONNECT_BANNER_COLOR, 2)
 
     def _draw_game_over(self, frame: Img, winner: Optional[str], score: dict[str, int],
-                         usernames: Optional[dict[str, str]] = None) -> None:
+                         usernames: Optional[dict[str, str]] = None,
+                         ratings: Optional[dict[str, int]] = None) -> None:
         h, w = frame.img.shape[:2]
         overlay = frame.img.copy()
         cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
@@ -305,8 +316,12 @@ class ImageView(Renderer):
         black_label = usernames.get(BLACK, "Black")
         label = f"{white_label} wins!" if winner == WHITE else f"{black_label} wins!" if winner == BLACK else "Game Over"
         title = "Game Over" if winner is None else label
-        white_line = f"{white_label} score: {score.get(WHITE, 0)}"
-        black_line = f"{black_label} score: {score.get(BLACK, 0)}"
+        if ratings is not None:
+            white_line = f"{white_label} rating: {ratings.get(WHITE, '-')}"
+            black_line = f"{black_label} rating: {ratings.get(BLACK, '-')}"
+        else:
+            white_line = f"{white_label} score: {score.get(WHITE, 0)}"
+            black_line = f"{black_label} score: {score.get(BLACK, 0)}"
         subtitle = "Press R to restart"
 
         self._put_centered(frame, title, h // 2 - 40, 1.0, 2)
@@ -323,7 +338,8 @@ class ImageView(Renderer):
                winner: Optional[str] = None,
                selection_targets: Optional[Iterable[Position]] = None,
                disconnect_notice: Optional[tuple[str, int]] = None,
-               usernames: Optional[dict[str, str]] = None) -> None:
+               usernames: Optional[dict[str, str]] = None,
+               ratings: Optional[dict[str, int]] = None) -> None:
         background = self._ensure_background(board)
         frame = Img()
         frame.img = background.img.copy()
@@ -380,10 +396,10 @@ class ImageView(Renderer):
             self._draw_selection(frame, selection)
 
         score = score if score is not None else {}
-        self._draw_score_bars(frame, score, usernames)
+        self._draw_score_bars(frame, score, usernames, ratings)
         self._draw_move_log(frame, board.cols * self.cell_size, board.rows, move_log or [], usernames)
         if game_over:
-            self._draw_game_over(frame, winner, score, usernames)
+            self._draw_game_over(frame, winner, score, usernames, ratings)
         elif disconnect_notice is not None:
             self._draw_disconnect_banner(frame, *disconnect_notice)
 

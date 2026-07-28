@@ -421,7 +421,7 @@ class TestUsernamesPropagateOverRealSockets:
                         if (joined.get("type") == EVENT and joined.get("topic") == "player.joined"
                                 and joined["payload"].get("username") == "bob"):
                             break
-                    assert joined["payload"] == {"color": "b", "username": "bob"}
+                    assert joined["payload"] == {"color": "b", "username": "bob", "rating": 1200}
         finally:
             await _stop_test_server(server, server_state, matchmaking_task)
 

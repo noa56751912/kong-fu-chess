@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Optional
 
 from boardio.board_parser import build_board
@@ -12,7 +13,7 @@ from net.protocol import (
     serialize_board,
 )
 from persistence.elo import compute_new_ratings
-from persistence.user_repo import UserRepo
+from persistence.user_repo import DEFAULT_RATING, UserRepo
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class GameSession:
         self.engine = GameEngine(build_board(starting_grid))
         self.connections: dict[str, object] = {}   # color -> websocket connection
         self.usernames: dict[str, str] = {}         # color -> logged-in username
+        self.ratings: dict[str, int] = {}            # color -> that player's rating as of seating
         self.spectators: list[object] = []           # read-only connections (rooms/, Phase E)
         self.bridge = BusBridge(self.engine.bus, self.engine.state.board.rows, self.broadcast_nowait)
         attach_logging(self.engine.bus, label)   # every session/room logs its own bus activity
@@ -72,15 +74,16 @@ class GameSession:
             return BLACK
         return None
 
-    def add_player(self, color: str, connection, username: str) -> None:
+    def add_player(self, color: str, connection, username: str, rating: int = DEFAULT_RATING) -> None:
         self.connections[color] = connection
         self.usernames[color] = username
+        self.ratings[color] = rating
         # SYNC_STATE is only ever sent once per recipient (join/reconnect),
         # so a player already connected before their opponent joins would
         # otherwise never learn that name - this lets ImageView show real
-        # usernames instead of "White"/"Black" for both sides, not just
-        # whichever side happened to be seated first.
-        self.engine.bus.publish('player.joined', {'color': color, 'username': username})
+        # usernames/ratings instead of "White"/"Black" for both sides, not
+        # just whichever side happened to be seated first.
+        self.engine.bus.publish('player.joined', {'color': color, 'username': username, 'rating': rating})
 
     def add_spectator(self, connection) -> None:
         self.spectators.append(connection)
@@ -219,6 +222,7 @@ class GameSession:
             "board": serialize_board(state.board),
             "score": state.score,
             "usernames": dict(self.usernames),   # whichever seats are already filled
+            "ratings": dict(self.ratings),       # ditto, keyed the same way
             "moves": moves,
             "clock_ms": state.clock_ms,
             "game_over": state.game_over,
@@ -235,6 +239,29 @@ class GameSession:
             self._tick_task = asyncio.create_task(self._run_tick_loop())
 
     async def _run_tick_loop(self) -> None:
+        """Advances the engine's clock by however much wall-clock time has
+        actually elapsed since the last tick, not by a flat TICK_MS.
+
+        asyncio.sleep(TICK_MS / 1000) only guarantees *at least* that long -
+        under event-loop load (other sessions' I/O, a blocking-via-to_thread
+        DB write, GC) a "50ms" tick can easily take 70-100ms of real time.
+        Crediting the engine with a fixed 50ms regardless would make
+        state.clock_ms - and therefore every move's server-computed
+        start_time/arrive_time - permanently fall behind real time. A
+        client's local_clock_ms (derived from its own perf_counter(), and
+        only ever re-anchored to clock_ms on a fresh SYNC_STATE) has no such
+        lag, so it would eventually race past a move's arrive_time before
+        the move visually finished interpolating: the piece's rendered
+        position snaps to the destination (t clamps to 1.0) while it's still
+        sitting in pending_moves playing its "move" sprite - a jump-then-
+        wobble-in-place artifact - until the real move.arrived event finally
+        arrives and clears it. Crediting real elapsed time instead means a
+        slow tick only ever costs itself, never accumulates into later ones.
+        """
+        last = time.monotonic()
         while not self.engine.game_over:
             await asyncio.sleep(TICK_MS / 1000)
-            self.engine.wait(TICK_MS)
+            now = time.monotonic()
+            elapsed_ms = (now - last) * 1000
+            last = now
+            self.engine.wait(elapsed_ms)
