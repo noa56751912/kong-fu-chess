@@ -4,3 +4,6 @@
 
 # Rotating server/client logs (net/ws_server.py, client_main.py).
 *.log
+
+# pytest-cov generated data.
+.coverage
